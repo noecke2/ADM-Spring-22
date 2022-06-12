@@ -1,0 +1,94 @@
+---
+title: "feature identification - mm"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(dslabs)
+#library(stats)
+#library(mosaic)
+
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+
+mnist$train$labels[1:200]
+
+mnist$train$labels[2:2]
+
+#View(mnist$train$images)
+
+mnist$train$images[2,]
+```
+
+```{r}
+row = 3
+mnist$train$labels[row:row]
+imag <- matrix(mnist$train$images[row,],nrow=28)[,28:1]
+image(imag,col=grey.colors(256), xlab = "", ylab="")
+
+```
+
+```{r}
+master.df = data.frame(matrix(nrow = 784,ncol = 2))
+indicator.2 = mnist$train$labels==(2)
+indicator.2 = as_tibble(indicator.2)
+indicator.3 = mnist$train$labels==(3)
+indicator.3 = as_tibble(indicator.3)
+
+for (i in 1:784){
+tib.2 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.2) = "actual.value"
+
+Mean = cbind(indicator.2,tib.2)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[1][i,] = as.numeric(Mean)}
+
+for (i in 1:784){
+tib.3 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.3) = "actual.value"
+
+Mean = cbind(indicator.3,tib.3)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[2][i,] = as.numeric(Mean)}
+
+master.df.1 = master.df%>%
+  mutate(diff = X1 - X2)%>%
+  mutate(pos.ind = ifelse(diff>0,1,0))%>%
+  mutate(RN = row_number())%>%
+  select(diff)
+```
+
+```{r}
+index_23 <- which(mnist$train$labels %in% c(2,3))
+y <- mnist$train$labels[index_23] 
+x <- mnist$train$images[index_23,]
+```
+
+```{r}
+i = 1
+iterations = 100
+value.vector = vector(length = iterations)
+for (i in 1:iterations){
+  binded = cbind(master.df.1,x[i,])
+colnames(binded) = c("diff", "value")
+binded = binded%>%    
+mutate(product = diff*value)%>%
+  summarize(sum = sum(product))
+value.vector[i] = as.numeric(binded)
+  
+  
+  
+}
+tibble(letter = as.factor(y[1:100]),value.vector)%>%
+ggplot()+
+  geom_boxplot(aes(x = value.vector, y = letter))
+```

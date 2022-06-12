@@ -1,0 +1,32 @@
+---
+title: "Challenge 2"
+author: "Andrew Noecker"
+date: "4/7/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidymodels)
+library(tidyverse)
+library(stats)
+library(tensorflow)
+library(keras)
+
+
+```
+
+
+
+DATASET
+
+```{r}
+cifar <- dataset_cifar10()
+```
+
+
+

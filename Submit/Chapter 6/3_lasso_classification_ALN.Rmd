@@ -1,0 +1,280 @@
+---
+title: "Using LASSO for classification"
+author: "Jaime Davila"
+date: "4/10/2021"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.show="hide", results=FALSE)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+library(glmnet)
+library(vip)
+```
+
+# Introduction 
+
+The package `dslabs` has the `tissue_gene_expression` dataset. This dataset contains the gene expression for 500 random genes (out of over 20,000 measured by a microarray) for 189 samples across seven different tissues. Let's load the dataset and take a look at some of the summary statistics:
+
+```{r echo=TRUE, results=TRUE}
+library(dslabs)
+data(tissue_gene_expression)
+str(tissue_gene_expression)
+
+dim(tissue_gene_expression$x)
+table(tissue_gene_expression$y)
+```
+
+## Setting up our dataset
+
+On a first iteration we are interested in creating a classifier function that will allow us to distinguish between `cerebellum` and `colon` based on their gene expression profile. We can do it as follows:
+
+```{r echo=TRUE, results=TRUE}
+tissue.levels<- c("cerebellum","colon")
+sample.ids <- tissue_gene_expression$y %in% tissue.levels
+
+tissue.gene.tbl <- tissue_gene_expression$x[sample.ids,] %>%
+  as_tibble() %>%
+  mutate(tissue = factor(tissue_gene_expression$y[sample.ids], levels=tissue.levels))
+```
+
+And let's divide dataset into training/testing datasets:
+
+```{r echo=TRUE, results=TRUE}
+set.seed(123456)
+tissue.split <- initial_split(tissue.gene.tbl, prop=0.5)
+tissue.train.tbl <- training(tissue.split)
+tissue.test.tbl <- testing(tissue.split)
+```
+
+Finally, let's check the dimension of the training dataset:
+
+```{r echo=TRUE, results=TRUE}
+dim(tissue.train.tbl)
+```
+
+Notice that we only have 36 observations and we have 500 variables!
+
+1. Talk to the people in your group and try to explain why logistic regression would not work using this training table.
+
+WAY too many predictors (when the # of predictors are greater than # of observations then there's not enough degrees of freedom / no unique solutions). 
+
+
+# Using LASSO for binary classification
+
+We would like to build a model that will allow us to predict the tissue type based on the gene expression. Furthermore we would like to identify a small number of features (variables) to use in this model. Given LASSO's ability to identify a small subset of variables, seems this method is particularly well-suited for the problem.
+
+Notice that we have used LASSO only for prediction so far, however `tidymodels` and `glmnet` allows us to use LASSO for classification by using the following syntax
+
+```{r echo=TRUE, results=TRUE}
+tissue.model <- 
+  logistic_reg(mixture = 1, penalty=tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+```
+
+2. Create a LASSO model and optimize the parameter $\lambda$ by following these steps
+
+    a. Create a recipe `tissue.recipe` that would predict tissue type. Justify whether or not  you need to use `step_dummy()` as a step in your recipe? How about `step_normalize()`? Create a `tissue.wf` workflow by combining the recipe and the model.
+    
+    
+```{r}
+tissue.recipe <- 
+  recipe(formula = tissue ~ ., data =tissue.train.tbl)%>%
+  step_normalize(all_predictors())
+
+
+tissue.wf <- workflow()%>%
+  add_recipe(tissue.recipe)%>%
+  add_model(tissue.model)
+```
+    
+We don't need step_dummy because our only categorical variable is the response variable. We do want to normalize so that all the predictors are along the same standard scale. 
+
+
+    b. Create a 10-fold cross validation dataset `tissue.fold` and grid `penalty.grid`. Use `tune_grid()` and plot the effect of the penalty in your classification accuracy. Notice that you get an error message that says **"Fold10: No event observations were detected in `truth` with event level `cerebellum`"**. Can you explain what this error means?
+    
+    
+```{r}
+tissue.fold <- vfold_cv(tissue.train.tbl, v = 10)
+
+penalty.grid <-
+  grid_regular(penalty(range = c(-2, 2)), levels = 20)
+
+tune.res <- tune_grid(
+  tissue.wf,
+  resamples = tissue.fold, 
+  grid = penalty.grid
+)
+autoplot(tune.res)
+
+
+tissue.train.tbl%>%
+  select(tissue)
+```
+
+It means that in one of our 10 folds we had no observations that contained tissue = cerebellum, so our model has nothing to predict in those instances - no matter what it will predict tissue = colon in those instances. 
+    
+
+    c. Select the best penalty by using the function `select_by_one_std_err()` and explain how this function works compared with `select_best()`? Use this parameter to finalize your workflow and fit. Calculate your confusion matrix using the testing dataset
+    
+```{r}
+best.penalty <- select_by_one_std_err(tune.res, desc(penalty), metric = "accuracy")
+
+select_best(tune.res, penalty, metric = "accuracy")
+
+tissue.final.wf <- finalize_workflow(tissue.wf, best.penalty)
+tissue.final.fit <- fit(tissue.final.wf, data = tissue.train.tbl)
+
+tissue.pred <- augment(tissue.final.fit, tissue.test.tbl)
+
+conf_mat(tissue.pred, truth = tissue, estimate = ".pred_class")
+
+
+```
+
+select_by_one_std_err selects the most simple model that is within one standard error of the numerically optimal results. 
+    
+
+    d. Determine which coefficients in your LASSO model are non-zero (you should get only two). Do a quick google search for "GPM6B genecards". Does it make sense that this gene distinguishes between cerebellum and colon? Plot the values of these two genes in your training and testing dataset? Are the values of these two genes very different across the two tissue types?
+
+
+```{r}
+tidy(tissue.final.fit)%>%
+  filter(estimate != 0)
+
+ggplot(data = tissue.gene.tbl, aes(x = GPM6B, y = CLIP3, color = tissue))+
+  geom_point()
+```
+
+
+
+
+
+# Multiple tissue classification
+
+Now that we gained some confidence in distinguishing between two tissues, we would like to create a more complex classifier. First, let's take a look at the number of tissues in our dataset
+
+```{r echo=TRUE, results=TRUE}
+table(tissue_gene_expression$y)
+```
+
+It seems we don't have enough placenta tissues in our dataset, so we will exclude them from our dataset.
+
+```{r echo=TRUE, results=TRUE}
+placenta.idx <-which(tissue_gene_expression$y=="placenta")
+tissue_gene_expression$x <- tissue_gene_expression$x[-placenta.idx,]
+tissue_gene_expression$y <- droplevels(tissue_gene_expression$y[-placenta.idx])
+
+multiple.tissue.gene.tbl <- tissue_gene_expression$x[-placenta.idx,] %>%
+  as_tibble() %>%
+  mutate(tissue = droplevels(tissue_gene_expression$y[-placenta.idx]))
+
+table(multiple.tissue.gene.tbl$tissue)
+```
+
+And create a testing/training dataset
+
+```{r echo=TRUE, results=TRUE}
+set.seed(6543)
+tissue.split <- initial_split(multiple.tissue.gene.tbl, prop=0.5)
+multiple.tissue.train.tbl <- training(tissue.split)
+table(multiple.tissue.train.tbl$tissue)
+multiple.tissue.test.tbl <- testing(tissue.split)
+table(multiple.tissue.test.tbl$tissue)
+```
+
+Finally we can set up our model by making use of `multinom_reg()`
+
+```{r echo=TRUE, results=TRUE}
+tissue2.model <- 
+  multinom_reg(mixture = 1, penalty=tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+```
+
+3. Create a LASSO model and use 10-fold cross validation and `select_by_one_std_err()` to determine the optimal penalty. What is the accuracy of LASSO on the testing dataset? How does the confusion matrix look on the testing dataset?
+
+
+```{r}
+tissue2.recipe <- 
+  recipe(formula = tissue ~ ., data = multiple.tissue.train.tbl)%>%
+  step_normalize(all_predictors())
+
+
+tissue2.wf <- workflow()%>%
+  add_recipe(tissue2.recipe)%>%
+  add_model(tissue2.model)
+
+
+tissue2.fold <- vfold_cv(multiple.tissue.train.tbl, v = 10)
+
+penalty.grid <-
+  grid_regular(penalty(range = c(-2, 2)), levels = 20)
+
+tune.res2 <- tune_grid(
+  tissue2.wf,
+  resamples = tissue2.fold, 
+  grid = penalty.grid
+)
+autoplot(tune.res2)
+
+
+best.penalty <- select_by_one_std_err(tune.res2, desc(penalty), metric = "accuracy")
+
+select_best(tune.res, penalty, metric = "accuracy")
+
+multiple.tissue.final.wf <- finalize_workflow(tissue2.wf, best.penalty)
+multiple.tissue.final.fit <- fit(multiple.tissue.final.wf, data = multiple.tissue.train.tbl)
+
+multiple.tissue.pred <- augment(multiple.tissue.final.fit, multiple.tissue.test.tbl)
+
+conf_mat(multiple.tissue.pred, truth = tissue, estimate = ".pred_class")
+```
+
+
+4. 
+
+    a. Using the command `tidy()` determine the non-zero coefficients of your model (please remove the constant terms). You should have about 21 non-zero coefficients. How do you interpret these terms? How many non-zero coefficients correspond to each tissue?
+    
+```{r}
+tidy(multiple.tissue.final.fit)%>%
+  filter(estimate != 0, term != "(Intercept)")
+
+tidy(multiple.tissue.final.fit)%>%
+  filter(estimate != 0, term != "(Intercept)")%>%
+  count(class)
+```
+    
+
+    b. What is the gene that allows you to distinguish a liver? Do a google search of the gene plus genecards and see if it makes sense. Do a boxplot of the value of the gene across the tissues from your testing dataset and interpret it. Do a boxplot of the predicted probability of being a liver  across all the tissues from your testing dataset and interpret it.
+    
+```{r}
+tidy(multiple.tissue.final.fit)%>%
+  filter(estimate != 0, term != "(Intercept)")%>%
+  filter(class == "liver")
+
+
+ggplot(data = multiple.tissue.gene.tbl, aes(x = tissue, y = TFR2))+
+  geom_boxplot()
+
+ggplot(data = multiple.tissue.pred, aes(x = tissue, y = .pred_liver))+
+  geom_boxplot()
+
+```
+    
+
+
+5. 
+
+    a. In your testing dataset there was a cerebellum that was missclassified as a kidney. Identify this observation and determine its predicted probability of being each distinct tissue.
+
+    b. Using your testing dataset do a boxplot of the predicted probability of being a cerebellum and the predicted probability of being a kidney. Can you identify the misclassified sample in the two boxplots?
+

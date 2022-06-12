@@ -1,0 +1,186 @@
+---
+title: "Linear regression and tidymodels"
+author: "Jaime Davila"
+date: "2/27/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+PREDICTION: Response is continuous
+  Parametric: linear model (assumes that the population can be adequately modeled by a probability distribution that has a fixed set of parameters)
+  Non-parametric: KNN (makes no assumptions about some probability distribution when modeling the data)
+  
+LINEAR MODEL:
+  y = a0 + a1x1 + a2x2 + ... + anxn
+  
+  Goal is to minimize sum of residuals (sum of (observed - predicted)^2)
+  
+# Introduction to linear regression using `tidymodels`
+
+In today's class we will explore concepts about linear regression and how they are implemented using the `tidymodels` package. The `tidymodels` packages allows for a consistent interface to explore a multitude of prediction models so we will start learning its syntax using linear models as an example.
+
+## Loading the dataset and creating testing and training data
+
+We can load this package by making use of the following code. Notice that we use the function `tidymodels_prefer()` which allows to resolve known conflicts between different packages with the `tidymodels` package.
+
+```{r}
+library(tidymodels)
+tidymodels_prefer()
+```
+
+The example that we will be using today will be the `ames` dataset which is available in the `modeldata` package. The `ames` dataset contains information about real estate prices in Ames, Iowa. Let's load the dataset and check its size:
+
+```{r echo=TRUE}
+library(modeldata)
+data(ames)
+dim(ames)
+```
+
+1. Do a histogram of the `Sale_Price` variable. What do you notice? Create a new variable `log_Sale_Price` which corresponds to the log10 of the `Sale_Price`. How does the histogram of the new variable look like?
+
+```{r}
+test1 <- ames%>%
+ggplot()+
+  geom_histogram(aes(x = Sale_Price))
+
+ames <- ames%>%
+  mutate(log_Sale_Price = log10(Sale_Price))
+
+test2 <- ames%>%
+  ggplot()+
+    geom_histogram(aes(x = log_Sale_Price))
+
+```
+
+
+
+2. The first task in the creation of a model is to divide the dataset into testing and training. Create an initial split of the data using the function `initial_split` from `tidymodels` with 80% of the data in your training dataset and 20% in your testing How does the distribution of the response variable (`log_Sale_Price`) look across training and testing datasets? Please leave the command `set.seed(12345)` which allows the results to be reproducible.
+
+```{r}
+set.seed(12345)
+
+ames_split <- initial_split(ames, prop = 0.8)
+ames.train <- training(ames_split)
+ames.test <- testing(ames_split)
+
+ames.train%>%
+  ggplot()+
+    geom_histogram(aes(x = log_Sale_Price))
++
+ames.test%>%
+  ggplot()+
+    geom_histogram(aes(x = log_Sale_Price))
+
+```
+
+## Creating linear models with `parsnip`
+
+We are interested in predicting the `log_Sale_Price` as a linear of `Longitude` and `Latitude`. In order to do that we will be using `parsnip` which provides a standardized interface to create models. 
+
+The first part consist of declaring the type of model we will be using (linear regression using `linear_reg`) and what implementation (or engine) of linear regression we will be using (`lm`). We can do do this using the following code:
+
+```{r echo=TRUE}
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+```
+
+In the next part we declare a workflow, which is a set of steps where preprocessing and modeling are glued together. In our case we are not doing any preprocessing, so notice we are just adding our linear model (`lm.model`) and the formula for the model (`log_Sale_Price~Longitude + Latitude`) in the following code
+
+```{r echo=TRUE}
+lm.wflow <- workflow() %>%
+  add_model(lm.model) %>%
+  add_formula(log_Sale_Price ~ Longitude + Latitude)
+```
+
+Finally, we fit our workflow using our traning dataset:
+
+```{r echo=TRUE}
+lm.fit <- fit(lm.wflow, ames.train)
+```
+
+Notice that this set of steps corresponds to the second step of our class, namely fitting the model using our testing dataset. For completeness let's include all of the steps in a single chunk:
+
+```{r echo=TRUE}
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_model(lm.model) %>%
+  add_formula(log_Sale_Price ~ Longitude + Latitude)
+
+lm.fit <- fit(lm.wflow, ames.train)
+```
+
+3. We can extract information about the linear model using the command `extract_fit_engine()` piped withe either `tidy()` or `glance`. Extract the information about the coefficients of your linear model. Are houses in North Ames usually more expensive that in the South? How about East-West?  What is the $R^2$ value of your model?
+
+```{r}
+#To get R^2 and other model summary stats
+extract_fit_engine(lm.fit)%>%
+  glance()
+
+extract_fit_engine(lm.fit)%>%
+  tidy()
+```
+
+R-squared value is 0.173, which is pretty low. Because latitude is positive, northern parts of Ames are more expensive, and because longitude is negative, eastern parts of town are cheaper (western parts are more expensive). So, North and West are more expensive than South and East respectively. 
+
+
+4. Use the `predict` command using your `lm.fit` and your testing dataset. What is the type of the output of `predict`? Consult the help for the command `augment` from `tidymodels` and use it to create a new column in your testing dataset with the prediction of your model. Do a histogram comparing your predictions with your response variable. What can you conclude from this graph?
+
+```{r}
+predict(lm.fit, ames.test)
+
+pred.test <- augment(lm.fit, ames.test)
+
+# ames.test <- lm.fit%>%
+#   augment(new_data = ames.test)
+
+#Predicted histogram
+pred.test %>%
+  ggplot()+
+  geom_histogram(aes(x = .pred))
+
+#Original histogram
+pred.test %>%
+  ggplot()+
+  geom_histogram(aes(x = log_Sale_Price))
+
+#Comparative histograms
+pred.test%>%
+  select(Latitude, Longitude, log_Sale_Price, .pred)%>%
+  pivot_longer(c(3:4))%>%
+  ggplot()+
+    geom_histogram(aes(x = value))+
+    facet_wrap(~name)
+
+
+```
+
+Predict now outputs a tibble. We see an almost bimodal distribution compared to a relatively symmetric histogram originally. It seems it's underfitting values around 5.2 and probably overfitting values around 5.15 and 5.3 - the scale for the .pred histogram is much smaller. It also misses values around 5.4 and 5.
+
+Using the faceted histogram, we see that we are overfitting in the middle.
+
+
+
+
+5. Consult the documentation for `rmse` and `rmse_vec` from the the `yardstick` package. What are the types of the outputs for each function? Use this information to compute the MSE of your model on your training dataset.
+
+```{r}
+rmse(pred.test, log_Sale_Price, .pred)
+
+rmse_vec(pred.test$log_Sale_Price, pred.test$.pred)
+
+#MSE
+(rmse_vec(pred.test$log_Sale_Price, pred.test$.pred))^2
+```
+
+
+

@@ -1,0 +1,348 @@
+---
+title: "Boosting models "
+author: "Jaime Davila/Matt Richey"
+date: "5/4/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.show="hide", results=FALSE)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+library(dslabs)
+tidymodels_prefer()
+```
+
+# Introduction
+
+The idea behind boosting is that we employ "weak learning" over and over again in order to get a suitable model.  With boosting, we build a large number of  minimal (underfitted) models. From these underfitted models, aka **weak learners**,  we build a final  model by adding the underfitted models. 
+
+In general, any form of base model can work, but boosting most often uses trees. Hence, in what follows, the weak learner will involve small trees, usually with  depth =1 (stumps) or depth=2. 
+
+Suppose we have data $X$, a response variable $y$ and a learning rate $\lambda >0$ . We will  build a sequence of weak learners (small trees), $\hat f_b$, $b=1...B$ as follows.
+
+  * Initialize the **residuals** $r=y$ and  the **initial model** $\hat f(x)=0$. 
+
+  * For $b=1,2,\dots,B$, 
+    * Fit a weak learner $\hat f_b(x)$ to the $X$ and $r_{i-1}$ (the current response). 
+    * Update $\hat f(x)$ via
+    $\hat f(x) \leftarrow \hat f(x)+\lambda \hat f_b(x)$
+    * Update the residuals
+    $r \leftarrow r-\lambda \hat f_b(X)$
+
+  * When done, the boosted model is:
+  $$\hat f(x)=\lambda(\hat f_1(x)+\cdots+\hat f_B(x)).$$
+
+
+# Using boosting on the election data
+
+Let's see how this works on an old example, the 2008 election dataset. As usual, let's load our dataset and divide into training/testing datasets
+
+```{r echo=TRUE}
+data("polls_2008")
+polls.2008.tbl <- tibble(polls_2008)
+polls.2008.tbl
+
+set.seed(12345)
+poll.split <- initial_split(polls.2008.tbl)
+poll.train.tbl <- training(poll.split)
+poll.test.tbl <- testing(poll.split)
+```
+
+And let's start by loading the `xgboost` library and create a skeleton of our model describition using `use_xgboost` from the `usemodels` package
+
+```{r echo=TRUE, results=TRUE}
+library(xgboost)
+library(usemodels)
+use_xgboost(margin~day, poll.train.tbl, tune=FALSE)
+```
+
+We will copy the generated code and pack in it a function. Notice our function will have parameters for:
+
+ * the number of trees (`num_trees` or $B$ in our previous description) 
+ * the learning rate (`learn.rate` or $\lambda$ from our intro)
+ * the tree depth (`tree.depth`) for the depth of the weak learners (trees) that we will be using
+
+All of these parameters we pass on to the function `boost_tree()`
+
+```{r echo=TRUE}
+create_boost <- function(poll.train.tbl, num.trees, learn.rate, tree.depth) {
+  xgboost_recipe <- 
+    recipe(formula = margin ~ day, data = poll.train.tbl) %>% 
+    step_zv(all_predictors()) 
+
+  xgboost_spec <- 
+    boost_tree(trees=num.trees, learn_rate=learn.rate, tree_depth=tree.depth) %>% 
+    set_mode("regression") %>% 
+    set_engine("xgboost") 
+
+  xgboost_workflow <- 
+    workflow() %>% 
+    add_recipe(xgboost_recipe) %>% 
+    add_model(xgboost_spec) 
+  
+  fit(xgboost_workflow, poll.train.tbl)
+}
+```
+
+And as before we will have functions that will allow us to calculate our error and plot our model:
+
+```{r echo=TRUE}
+calc_rmse <- function(model, test.tbl) {
+  augment(model, test.tbl) %>%
+    rmse(margin, .pred) %>% 
+    pull(.estimate)
+}
+
+plot_model <- function(model, test.tbl) {
+  augment(model, test.tbl) %>%
+    ggplot()+
+    geom_point(aes(day,margin))+
+    geom_step(aes(day,.pred), col="red")
+}
+```
+
+The following set of exercises will illustrate how the parameters for the boosting model work:
+
+1. Let's start by fixing our `tree_depth=1` (so we will be using trees of just one level) and our `learn.rate=1` (a relatively aggressive learning rate)
+
+    a. Create a boosting model using only one tree and plot the resulting model. Explain why the resulting model is a constant line
+    
+```{r}
+plot_model(create_boost(poll.train.tbl = poll.train.tbl, tree.depth = 1, learn.rate = 1, num.trees = 1), poll.test.tbl)
+```
+
+Straight line because we're just taking the mean and that's the only value we're getting from our model. 
+
+    b. Now try values of number of trees 2,3,4,5 and plot the resulting model and calculate the rmse. Explain why increasing the number of trees result in a model with better rmse
+    
+```{r}
+trial.model <- create_boost(poll.train.tbl = poll.train.tbl, tree.depth = 1, learn.rate = 1, num.trees = 5)
+
+calc_rmse(trial.model, poll.test.tbl)
+plot_model(trial.model, poll.test.tbl)
+```
+
+Because as we increase the number of trees the model has more chances to iterate and fit the data. 
+    
+  
+    c. Now try values of number of trees 10,20,50,100 and plot the resulting model and calculate the rmse. Are we overfitting the data when we use too many trees?
+    
+```{r}
+trial.model <- create_boost(poll.train.tbl = poll.train.tbl, tree.depth = 1, learn.rate = 1, num.trees = 100)
+calc_rmse(trial.model, poll.test.tbl)
+plot_model(trial.model, poll.test.tbl)
+
+```
+
+It does look like we are overfitting a little bit, as we see the rmse start to increase when we increase the number of trees beyond 10     
+
+
+2. The second important parameter of a boosting model is our $\lambda$ or learning rate. Notice the learning measures how much contribution each individual model will be making to the boosting model. 
+
+    a. Let's start by fixing our number of trees to 100 and our tree depth to 1. Try learning rates of 1, 0.5, 0.2, 0.1, 0.05 and plot the resulting model and calculate the rmse. What is the effect of the smaller learning rates on the plot?
+    
+```{r}
+trial.model <- create_boost(poll.train.tbl = poll.train.tbl, tree.depth = 1, learn.rate = 0.05, num.trees = 100)
+calc_rmse(trial.model, poll.test.tbl)
+plot_model(trial.model, poll.test.tbl)
+```
+
+It seems like smaller learning rates decreased the rmse until we set the learning rate to 0.05 (there we saw a slight increase from the 0.1 model). 
+    
+
+    b. Finally let's try using 1000 trees and try learning rates from of  0.5, 0.1, 0.05, 0.01, 0.005. Describe your results from the plot and the rmse.
+    
+```{r}
+trial.model <- create_boost(poll.train.tbl = poll.train.tbl, tree.depth = 1, learn.rate = 0.005, num.trees = 1000)
+calc_rmse(trial.model, poll.test.tbl)
+plot_model(trial.model, poll.test.tbl)
+```
+
+This was similar to part a, where 0.01 led to the lowest rmse, and then we saw a slight uptick in rmse when the learning rate was 0.005. 
+    
+    
+It is clear from the previous exercises that optimizing the parameters for number of trees and for learning rate is very important when building a boosting model. We will start by setting up a grid with 5 levels for  these 2 parameters:
+
+
+```{r echo=TRUE, results=FALSE}
+(poll.grid <- grid_regular(trees(range=c(100,500)), learn_rate(range=c(-3,-1)), levels = 5))
+```
+
+And we will create a 10-fold cross validation dataset
+
+```{r echo=TRUE}
+poll.folds <- vfold_cv(poll.train.tbl, v = 10)
+```
+
+Finally we will use `use_xgboost` to create our template for our cross validation
+
+```{r echo=TRUE, results=TRUE}
+use_xgboost(margin~day, poll.train.tbl)
+```
+
+Notice that when copying the code
+
+* We make sure to only set `trees`, and `learn_rate` as tuneable parameters in `xgboost_spec`
+* We use `poll.folds` and `poll.grid` in our `tune_grid` function
+
+```{r echo=TRUE}
+xgboost_recipe <- 
+  recipe(formula = margin ~ day, data = poll.train.tbl) %>% 
+  step_zv(all_predictors()) 
+
+xgboost_spec <- 
+  boost_tree(trees = tune(), learn_rate = tune()) %>% 
+  set_mode("regression") %>% 
+  set_engine("xgboost") 
+
+xgboost_workflow <- 
+  workflow() %>% 
+  add_recipe(xgboost_recipe) %>% 
+  add_model(xgboost_spec) 
+
+set.seed(24725)
+xgboost_tune <-
+  tune_grid(xgboost_workflow, 
+            resamples = poll.folds, 
+            grid = poll.grid)
+```
+
+The following plot illustrates how if you make your learning rate small enough you need to increase your number of trees to get a comparable `rmse`. However it seems for rates of `0.1` and `0.03` we reach saturation by the time we are using 100 trees.
+
+```{r echo=TRUE, fig.show='asis'}
+autoplot(xgboost_tune, metric="rmse", select_best=TRUE)
+```
+
+Finally let's select the optimal parameters and finalize our workflow
+
+```{r echo=TRUE, results=TRUE}
+(best.param <- select_best(xgboost_tune, "rmse"))
+(poll.boost.wf <- finalize_workflow(xgboost_workflow, best.param))
+poll.boost.model <- fit(poll.boost.wf, poll.train.tbl)
+```
+
+Let's plot our model on our complete dataset and calculate our `rmse` using our testing dataset
+
+```{r echo=TRUE, results=TRUE, fig.show='asis'}
+plot_model(poll.boost.model, polls.2008.tbl)
+calc_rmse(poll.boost.model, poll.test.tbl)
+```
+
+
+# Back to square one: The MNIST dataset
+
+Before we go let's run a boosting model for MNIST dataset. As usual, let's load the dataset and subset to only 1000 images.
+
+```{r echo=TRUE}
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+set.seed(2022)
+index <- sample(nrow(mnist$train$images), 1000)
+digit.train.tbl <- as_tibble (mnist$train$images[index,]) %>%
+  mutate(digit = factor(mnist$train$labels[index]))
+
+index <- sample(nrow(mnist$test$images), 1000)
+digit.test.tbl <- as_tibble (mnist$test$images[index,]) %>%
+  mutate(digit = factor(mnist$test$labels[index]))
+```
+
+And let's keep a couple of handy functions for plotting images.
+
+```{r echo=TRUE, fig.show='asis'}
+plotImage <- function(dat,size=28){
+  imag <- matrix(dat,nrow=size)[,28:1]
+  image(imag,col=grey.colors(256), xlab = "", ylab="") 
+}
+
+plot_row <- function(tbl) {
+  ntbl <- tbl %>%
+    select(V1:V784)
+  plotImage(as.matrix(ntbl))
+}
+
+create_image_vip <- function(model.fit) {
+  # Creates the importance image
+  imp.tbl <- model.fit %>%
+    extract_fit_engine() %>%
+    vip::vi() %>%
+    mutate(col=as.double(str_remove(Variable,"V")))
+  mat <- rep(0, 28*28)
+  mat[imp.tbl$col] <- imp.tbl$Importance
+  mat
+}
+```
+
+Also since we will be optimizing parameters using cross-validation, let's create a 5 fold cross-validation dataset and grid with 10 levels for the learning rate:
+
+```{r echo=TRUE, results=TRUE}
+set.seed(2022)
+digit.folds <- vfold_cv(digit.train.tbl, v = 5)
+(digit.grid <- grid_regular(learn_rate(range=c(-2,0)), levels = 10))
+```
+
+And let's use `use_xgboost` to create a template for our code
+
+```{r echo=TRUE, results=TRUE}
+use_xgboost(digit~., digit.train.tbl)
+```
+
+For the sake of time, we will be optimizing only `learn_rate` 
+
+```{r echo=TRUE, results=TRUE}
+xgboost_recipe <- 
+  recipe(formula = digit ~ ., data = digit.train.tbl) %>% 
+  step_zv(all_predictors()) 
+
+xgboost_spec <- 
+  boost_tree(learn_rate = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") 
+
+xgboost_workflow <- 
+  workflow() %>% 
+  add_recipe(xgboost_recipe) %>% 
+  add_model(xgboost_spec) 
+
+set.seed(34854)
+xgboost_tune <-
+  tune_grid(xgboost_workflow, 
+            resamples = digit.folds,
+            grid=digit.grid)
+```
+
+And let's plot our optimization 
+
+```{r echo=TRUE, fig.show='asis'}
+autoplot(xgboost_tune, metric="accuracy", select_best=TRUE)
+```
+
+Finally let's select the optimal parameters, finalize our workflow, and calculate our accuracy and confusion matrix:
+
+```{r echo=TRUE, results=TRUE}
+(best.param <- select_best(xgboost_tune, "accuracy"))
+(digit.boost.wf <- finalize_workflow(xgboost_workflow, best.param))
+digit.boost.model <- fit(digit.boost.wf, digit.train.tbl)
+
+augment(digit.boost.model, digit.test.tbl) %>%
+  accuracy(truth=digit, estimate= .pred_class)
+
+augment(digit.boost.model, digit.test.tbl) %>%
+  conf_mat(truth=digit, estimate= .pred_class)
+```
+
+So it seems boosting in the case of digit recognition is not as good as a random forest, but it is not too far off the mark.
+
+Finally, let's look at our variable importance:
+
+```{r fig.show="asis", echo=TRUE}
+create_image_vip(digit.boost.model) %>%
+  plotImage()
+```
+
+It seems that not as many pixels are important as in a random forest, but still it takes information from lots of places to make the decision.
+

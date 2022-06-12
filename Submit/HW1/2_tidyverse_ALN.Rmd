@@ -1,0 +1,435 @@
+---
+title: "A summary of the tidyverse"
+author: "Jaime Davila"
+date: "2/2/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Transforming and visualizing with tidyverse
+
+`tidyverse` is a powerful collection of functions and libraries that allows us interact and wrangle datasets in an effective manner. Before we use any of those commands we need to instruct R to the `tidyverse` library which can be done with the following command:
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse) 
+library(ggplot2)
+```
+
+During this session we will be analyzing datasets from [Defining the '90s Music Cannon ](https://pudding.cool/2020/07/song-decay/) so we will start by using `read_csv` to load our dataset into the tibble `song.year.tbl`.
+
+```{r message=FALSE}
+file.path="~/Mscs 341 S22/Class/Data/song.year.csv"
+song.year.tbl <- read_csv(file.path)
+song.year.tbl
+```
+
+## A first plot
+
+We will start by doing a simple plot summarizing the number of songs per year of our dataset by using `ggplot`. A good presentation of `ggplot` can be found in [Chapter 3:Data Visualization](https://r4ds.had.co.nz/data-visualisation.html). A couple of quick things to note about this code:
+
+* We will be using `geom_histogram` as our geometric object
+* Notice that since`year` is a number we need to convert it to a categorical variable using the command `as.factor`
+
+```{r warning=FALSE}
+ggplot(song.year.tbl, aes(x=as.factor(year)))+
+  geom_histogram(stat="count")+
+  labs(x="Year")
+```
+
+
+## A first summary
+
+We can obtain the number of songs by combining the commands `group_by` and `summarize`.Again notice that:
+
+* We are using the pipe (%>%) to combine the two commands together.
+* `group_by` can take as an argument any combination of the columns from the tibble.
+* `summarize` is a very flexible command and allows the calculation of any number of statistics like average, minimum or maximum. In this particular case we are just counting the number of elements by using the function `n()`.
+
+```{r}
+song.year.tbl %>%
+  group_by(year) %>%
+  summarize(n=n())
+```
+
+## Transforming datasets
+
+Before attempting the following exercises we recommend that you read [Chapter 5: Data Transformation] (https://r4ds.had.co.nz/transform.html).
+
+In particular we will be using the following 7 commands (also called verbs) from `tidyverse`
+
+ * `group_by`
+ * `summarize`
+ * `slice`
+ * `arrange`
+ * `select`
+ * `filter`
+ * `mutate`
+
+1. In the following exercises we will modify our original dataset to answer specific questions:
+
+    a. Generate a table with top-5 artists from the 90s according to their number of songs and call it `top5.tbl`. 
+    
+```{r}
+top5.tbl <- song.year.tbl%>%
+  group_by(artist)%>%
+  summarize(count = n())%>%
+  slice_max(count, n = 5)
+```
+    
+
+
+    b. Let's explore Mariah Carey's career in depth. Start by summarizing the number of hits of Mariah Carey by year and find out what was her best year.
+    
+```{r}
+song.year.tbl%>%
+  filter(artist == "Mariah Carey")%>%
+  group_by(year)%>%
+  summarize(count = n())%>%
+  arrange(desc(count))
+
+#1991 was her best year
+```
+
+1991 was her best year with 3 hits
+    
+
+    c. What are the songs from her best year? Do you recognize any of them?
+    
+```{r}
+song.year.tbl%>%
+  filter(artist == "Mariah Carey", year == 1991)
+```
+
+Here 3 songs are Emotions, 'I Don't Wanna Cry', and 'Someday'. I recognize Someday. 
+    
+
+2. It seems like some artists like Mariah Carey had a song in the billboard in every year of the 90s decade, while others only had one hit in the entire decade. 
+
+    a. We are interested in calculating the `year.span` of an artist, which is basically defined as the difference in years between their latest and earliest song in the 90s. Create a table `artist.span.tbl` with such information and include `earliest.year` and `latest.year` as columns:
+    
+```{r}
+artist.span.tbl <- song.year.tbl%>%
+  group_by(artist)%>%
+  summarize(earliest.year = min(year),
+            latest.year = max(year))%>%
+  mutate(year.span = latest.year - earliest.year+1)
+```
+    
+
+
+    b. What are the top-5 artists with biggest span?
+    
+```{r}
+artist.span.tbl%>%
+  arrange(desc(year.span))%>%
+  slice(1:5)
+
+artist.span.tbl%>%
+  slice_max(year.span, n = 5)
+```
+
+Mariah Carey, Whitney Houston, Aerosmith, Madonna, Celine Dion, TLC (tied with Celine Dion)
+    
+
+
+    c. Generate a histogram describing the span across all the artists in our table:
+    
+```{r}
+artist.span.tbl%>%
+  ggplot(aes(x = as.factor(year.span)))+
+    geom_histogram(stat = "count")
+```
+    
+
+
+3. Create a table with year and number of songs by artist and year. Only select artists that had at least 3 hits in a year. Generate a graph depicting this info.
+
+```{r}
+song.year.tbl%>%
+  group_by(artist, year)%>%
+  summarize(count = n())%>%
+  filter(count >= 3)%>%
+  ggplot(aes(x = as.factor(year)))+
+    geom_bar(aes(y = count, fill = artist), stat = "identity")
+```
+
+
+
+# Joinining datasets
+
+A common situation in analysis is that all of the information is not contained in just a single dataset. Let's start by loading a different dataset which has recognition metrics for all of our previous songs
+
+
+```{r warning=FALSE, message=FALSE}
+
+file.path="~/Mscs 341 S22/Class/Data/song.recognition.csv"
+
+song.recognition.tbl <- read_csv(file.path)
+```
+
+Notice how `song.recognition.tbl` has `artist`, `song`, `generation` and `recognition` as variables. `generation` is measured as the age of the respondents when the song was released. For example, Macarena was released in 1996, so -10 represents the people who *were 10 years old* when it was released (and were born in 1986), while 5 represents the people who *were born 5 years after the song* (and were born in 2001).
+
+Let's take a look at the entire dataset using a boxplot
+
+```{r}
+ggplot(song.recognition.tbl, aes(as.factor(generation), recognition)) +
+  geom_boxplot()+
+  labs(x="Generation")
+```
+
+In the following exercises we will explore this dataset in more detail. Make sure to consult  [Chapter 13:Relational data](https://r4ds.had.co.nz/relational-data.html) and pay close attention to the function `inner_join()`
+
+4. Let's explore  the decaying trend in recognition is the same according to the year that the song came out. Let's do that using the following steps:
+
+    1. Combine `song.recognition.tbl` and `song.year.tbl` in a single table called `song.decay.tbl`
+    
+```{r}
+song.decay.tbl <- song.recognition.tbl%>%
+  inner_join(song.year.tbl)
+```
+    
+    
+
+    2. Create the following which shows the trends for each different year. As the years get closer to the end of the decade we get a lot of observations where the y value is 0. Can you explain why?
+    
+```{r}
+song.decay.tbl%>%
+  mutate(year = as.factor(year))%>%
+  ggplot(aes(x = generation, y = recognition))+
+    geom_jitter(alpha = 0.3)+
+    geom_smooth(method = "lm")+
+  facet_wrap(~year)
+
+ggplot(song.decay.tbl, aes(x = generation, y = recognition)) +
+  geom_point(alpha=0.3) +
+  geom_smooth(method="lm")+
+  facet_wrap(vars(year), nrow=2)
+
+
+song.decay.tbl%>%
+  filter(year == 1999, generation >4)
+```
+
+As the years get closer to 1999, we get more y values that are 0 because they don't have data on people who are younger (maybe laws prohibiting them from collecting data from minors?) It does appear that the cut off is whenevery the generation is 18 - for example, generation 11 in 1990 represent people who would have been ~17-18 in 2018 so it makes sense that there wouldn't be data on them. As the year increases, this becomes true for more and more generations. 
+  
+
+5. Let's look at the trends for the top 5 most popular artist by doing a join with `top5.tbl` and subset to only negative generations. 
+
+```{r}
+top5.decay <- song.decay.tbl%>%
+  inner_join(top5.tbl)%>%
+  filter(generation<0)
+```
+
+
+    1. Plot the trends for every artist. Who is the most recognized artist (dare I say *diva*) from the 90s? 
+    
+```{r}
+top5.decay %>%
+  ggplot(aes(x = generation, y = recognition, color = artist))+
+    geom_point()+
+  geom_smooth(method = "lm", se = FALSE)
+```
+
+The most recognized artist appears to be Whitney Houston, although Madonna is more recognized among the older generations (-13 to -9) and has the highest single recognition value of close to 0.75 among generation -13. After that generation -9 though, Whitney Houston becomes the most recognized. 
+    
+    
+    2. Look at the individual trends for each artist by generating the following plot.
+    
+```{r}
+top5.decay %>%
+  group_by(artist, song)%>%
+  ggplot(aes(x = generation, y = recognition))+
+    geom_point()+
+  geom_smooth(aes(group = song), method = "lm")+
+  facet_wrap(~artist)
+```
+    
+   
+
+6. In the following exercise let's focus on songs by Whitney Houston.
+
+    1. Identify the most and least recognized songs by Whitney Houston by generating the following plot
+    
+```{r}
+top5.decay %>%
+  filter(artist == "Whitney Houston")%>%
+  ggplot(aes(x = generation, y = recognition, color = song))+
+    geom_point()+
+  geom_smooth(method = "lm")
+
+#My color scheme different than the plot given in pdf but same data representation / results
+```
+    
+   
+
+    2. Modify the previous plot so that the names are in order of recognition (*Hint*: Create a new categorical variable where the levels are arranged according to the average song recognition)
+    
+```{r}
+#I used fct_reorder2 instead of creating a categorical variable
+
+top5.decay %>%
+  filter(artist == "Whitney Houston")%>%
+  ggplot(aes(x = generation, y = recognition, color = fct_reorder2(song, generation, recognition)))+
+    geom_point()+
+  geom_smooth(method = "lm")+
+  labs(color = "Song")
+```
+
+```{r}
+
+#Here's the other way by creating the levels of the song 
+#and then changing the factor of the song column in the 
+#tibble when graphing
+song.levels <- (top5.decay %>%
+  filter(artist == "Whitney Houston")%>%
+  group_by(song)%>%
+  summarize(avg_rec = mean(recognition))%>%
+  arrange(-avg_rec))$song
+
+top5.decay %>%
+  filter(artist == "Whitney Houston")%>%
+  mutate(song = factor(song, levels = song.levels))%>%
+  ggplot(aes(x = generation, y = recognition, color = song))+
+    geom_point()+
+  geom_smooth(method = "lm")
+
+```
+
+    
+
+
+7. In this exercise we will plot the trends of particular sets of songs. For the purposes of the exercise we will subset `song.decay.tbl` to songs before generation 0
+
+```{r}
+song.decay.filter.tbl <- song.decay.tbl%>%
+  filter(generation<0)
+```
+
+
+    1. Identify the top-5 songs with the highest recognition and plot their trends. Make sure to use `inner_join`
+    
+```{r}
+top5_recognition <- song.decay.filter.tbl%>%
+  group_by(song)%>%
+  summarize(avg_recognition = mean(recognition))%>%
+  slice_max(avg_recognition, n = 5)
+
+top5_recognition%>%
+  inner_join(song.decay.filter.tbl)%>%
+  ggplot(aes(x = generation, y = recognition, color = song))+
+    geom_point()+
+  geom_smooth(method = "lm", se = FALSE)
+```
+
+The top 5 songs are "..Baby One More Time" (I'm assuming this is "Hit Me Baby One More Time), Macarena, Mambo No. 5, My Heart Will Go On, and Wannabe
+    
+    
+    1. Identify the top-5 songs with the highest variability and plot their trends. Make sure to use `inner_join`
+    
+```{r}
+
+#Unsure what 'variability' refers to here, but I decided to use variance of recognition among the songs
+
+top5_variance <- song.decay.filter.tbl%>%
+  group_by(song)%>%
+  summarize(variance = var(recognition))%>%
+  slice_max(variance, n = 5)
+
+top5_variance%>%
+  inner_join(song.decay.filter.tbl)%>%
+  ggplot(aes(x = generation, y = recognition, color = song))+
+    geom_point()+
+  geom_smooth(method = "lm", se = FALSE)
+
+```
+    
+    
+
+# Using pivots
+
+Make sure to read [Chapter 12:Tidy data](https://r4ds.had.co.nz/relational-data.html) and keep in mind the following commands:
+
+* `pivot_longer`
+* `pivot_wider`
+* `separate`
+
+
+8. We are interested in calculating how people from different generation remember songs from the 90s. In particular we are interested in calculating the average song recognition across milennials (people born between 1980 to 1994) and generation Z (people born after 1994)
+
+To do that create a new table using the following steps:
+ 
+ * Calculate the year a person was born based on the `year` and `generation` fields.
+ 
+ * Keep only entries of people who were born starting in 1980.
+ 
+ * People who were born between 1980 and 1994 will be milennials and the rest will be generation Z.
+ 
+  * Finally calculate the average recognition grouping by the generational group
+ 
+  * Name the resulting table `song.gen.tbl`
+  
+```{r}
+#Version where we don't get rid of years where no data exists
+# song.gen.tbl2 <- song.decay.tbl%>%
+#   mutate(year_born = year + generation)%>%
+#   filter(year_born>= 1980)%>%
+#   mutate(generation.group = ifelse(year_born <= 1994, "Millenial", "Z"))%>%
+#   group_by(song, generation.group)%>%
+#   summarize(avg_rec = mean(recognition))
+
+#Option used in PDF where years with 0 recognition (no data present) are excluded
+song.gen.tbl <- song.decay.tbl%>%
+  mutate(year_born = year + generation)%>%
+  filter(year_born>= 1980)%>%
+  mutate(generation.group = ifelse(year_born <= 1994, "Millenial", "Z"))%>%
+  filter(recognition != 0)%>%
+  group_by(song, generation.group)%>%
+  summarize(avg_rec = mean(recognition))
+
+song.gen.tbl
+```
+  
+
+
+9. As we can see `song.gen.tbl` has one different row for each `generation.group`, however we would like to have just one row per song and have columns with the average recognition for each generation. Use a pivot function to obtain the following table and name it `song.pivot.tbl`
+
+```{r}
+song.pivot.tbl <- song.gen.tbl%>%
+  pivot_wider(names_from = generation.group, values_from = avg_rec)%>%
+  arrange(-Millenial)
+
+song.pivot.tbl
+```
+
+
+
+10. Consider one of the tables for the original publication `time.series.tbl`
+
+```{r message=FALSE}
+url <- "https://raw.githubusercontent.com/the-pudding/song-decay-clean/master/src/assets/data/time_series_90s_july13.csv"
+time.series.tbl <- read_csv(url)
+time.series.tbl
+```
+
+Convert this table into a table with the following format (Note that generation is an integer and recognition is a double) and make sure to subset generation from `-13` to `10`
+
+
+```{r}
+time.series.tbl%>%
+  separate(artist_song, into = c("artist", "song"), sep = "\\|\\|\\|")%>%
+  # select(1:26)%>%
+  pivot_longer(3:50, names_to = "generation", values_to = "recognition", names_transform = list(generation = as.integer))%>%
+  filter(generation <=10)
+
+
+```
+
+

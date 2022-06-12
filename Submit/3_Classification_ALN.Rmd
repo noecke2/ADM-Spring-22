@@ -1,0 +1,200 @@
+---
+title: "Classification"
+author: "Jaime Davila"
+date: "2/20/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(caret)
+library(dslabs)
+```
+
+
+## The MNIST dataset
+
+The MNIST database (Modified National Institute of Standards and Technology database) is a large collection of handwritten digits used by the Machine learning community. The `dslabs` packages has a handy function called `read_mnist` that allows to load this dataset as follows:
+
+```{r}
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+```
+
+The first thing to notice about this dataset is its structure which we can find using the function `str`
+
+```{r}
+str(mnist)
+```
+
+As we can wee `mnist` has a training and testing set. The training dataset has 60,000 elements represented as a matrix of $6000 \times 784$ (every image is a vector of 784, representing a $28 \times 28$ image). It also has the labels corresponding to each of the images represented as integers. Finally the testing dataset has 10,000 elements represented in a similar way. Before we interact with this dataset, let's define a handy function that will allows us to plot any digit:
+
+```{r}
+plotImage <- function(dat,size=28){
+  imag <- matrix(dat,nrow=size)[,28:1]
+  image(imag,col=grey.colors(256), xlab = "", ylab="") 
+}
+```
+
+So now let's explore a couple of elements from our training and testing datasets
+
+```{r}
+# We plot the 10th element from our training dataset which is a 4.
+plotImage(mnist$train$images[10,])
+mnist$train$labels[10]
+
+# We plot the 102th element from our training dataset which is a 7.
+plotImage(mnist$train$images[102,])
+mnist$train$labels[102]
+
+# We plot the 212th element from our testing dataset which is a 5.
+plotImage(mnist$test$images[212,])
+mnist$test$labels[212]
+```
+
+## Is it a 2 or a 7?
+
+Our original problems has 784 predictors and a response variable with 10 different levels corresponding to each digit. We will start by simplifying our problem/dataset to recognize whether a digit is a `2` or a `7` and we will be using only two predictors, namely:
+
+* `x_1` will be the proportion of dark pixels in the upper left quadrant.
+* `x_2` will be the proportion of dark pixels in the lower right quadrant.
+
+Conveniently for us `dslabs` contains a random sample of 1000 digits (800 in training and 200 in testing). Let's load the dataset and plot it
+
+```{r}
+data("mnist_27")
+str(mnist_27)
+train.tbl <- tibble(mnist_27$train)
+train.tbl <-  train.tbl %>%
+  mutate(n=row_number())
+
+test.tbl <- tibble(mnist_27$test)
+test.tbl <-  test.tbl %>%
+  mutate(n=row_number())
+
+ggplot(train.tbl, aes(x=x_1, y=x_2, color=y))+
+  geom_point()
+```
+
+1. Pick the elements with the largest and smallest values in  `x_1` and plot their corresponding images. Do a boxplot comparing the value of `x_1` across 2 and 7s. Does `x1` allow you to distinguish in general between a 2 and 7?. Do the same analysis for `x_2`.
+
+*Hint*:Notice that the corresponding index in the `mnist` dataset can be found by using `mnist_27$index_train`
+
+
+```{r}
+train.tbl <- train.tbl%>%
+  mutate(index = mnist_27$index_train)
+
+train.tbl%>%
+  slice_min(x_1)
+
+plotImage(mnist$train$images[5096,])
+
+train.tbl%>%
+  slice_max(x_1)
+
+plotImage(mnist$train$images[28633,])
+
+train.tbl%>%
+  slice_min(x_2)
+
+plotImage(mnist$train$images[33996,])
+
+train.tbl%>%
+  slice_max(x_2)
+
+plotImage(mnist$train$images[51301,])
+
+
+#BOXPLOT
+train.tbl%>%
+  ggplot(aes(x = y, y = x_1, color = y))+
+  geom_boxplot()
+
+train.tbl%>%
+  ggplot(aes(x = y, y = x_2, color = y))+
+  geom_boxplot()
+
+```
+
+
+
+# Classification and KNN
+
+We can build our first model by using a KNN model. Notice that since we are in the classification setting we will be using the function `knn3`
+
+```{r}
+kNear=5
+knn.model <- knn3(y~x_1+x_2, data=train.tbl, k=kNear)
+```
+
+Notice that we can use the function `predict` on our testing dataset
+
+```{r}
+pred.prob <- predict(knn.model, test.tbl)
+head(pred.prob)
+```
+
+If we are interested in obtaining a class label we can do so by using the parameter `type="class"`
+
+```{r}
+pred <- predict(knn.model, test.tbl, type="class")
+head(pred)
+```
+
+2. Plot the probability that an element is a `2` on the testing dataset
+
+
+```{r}
+test.tbl%>%
+  mutate(pred_prob2 = pred.prob[,1])%>%
+  ggplot(aes(x = y, y = pred_prob2, fill = y))+
+    geom_boxplot()
+
+test.tbl%>%
+  mutate(pred_prob7 = pred.prob[,2])%>%
+  ggplot(aes(x = y, y = pred_prob7, fill = y))+
+    geom_boxplot()
+```
+
+
+
+3. Create a function `calc_error (kNear, train, test)` that calculates the misclassification error for KNN using `knear` neighbors
+
+
+```{r}
+calc_error <- function(kNear, train, test){
+  knn.model <- knn3(y ~ x_1+x_2, data = train, k = kNear)
+  pred <- predict(knn.model, test, type = "class")
+  mean(test$y != pred)
+}
+
+calc_error(5, train.tbl, test.tbl)
+```
+
+
+
+4. Plot the value of `k` against the misclassification error for $k=1..100$ using the testing dataset. What is the optimal value of `k`?
+
+```{r}
+vec <- vector(length = 100)
+
+for (i in 1:100){
+  vec[i] <- calc_error(i, train.tbl, test.tbl)
+}
+
+vec[which.min(vec)]
+which.min(vec)
+```
+
+We see that kNear = 41 has the lowest error
+
+
+
+5. (*Optional*) Using the optimal value of `k` identify cases that are missclassified. Is it more common that 2 gets confused for a 7 or the other way around? Plot the values of `x_1` and `x_2` for those.
+Plot a couple of digits that are missclassified. Any ideas for features that would allow for the correct classification?
+

@@ -1,0 +1,426 @@
+---
+title: "Using recipes in tidymodels"
+author: "Andrew Noecker"
+date: "3/1/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+# Using recipes in  `tidymodels`
+
+In today's class we will explore how to create better models by creating new variables from old ones. This process is sometimes called *feature engineering* and we will learn how to do using `recipes` from `tidymodels`. In this worksheet we will be covering most of the material from https://www.tmwr.org/recipes.html 
+
+## Using the ames dataset
+
+Let's start by loading the appropriate libraries, datasets and converting our variable `price` so that is in on log-scale. Also let's make sure that we create our testing and training dataset
+
+```{r echo=TRUE}
+library(tidymodels)
+tidymodels_prefer()
+
+library(modeldata)
+data(ames)
+ames <- ames %>%
+  mutate(Sale_Price=log10(Sale_Price))
+
+set.seed(12345)
+ames.split <- initial_split(ames, prop=0.8)
+ames.train <- training(ames.split)
+ames.test <- testing(ames.split)
+```
+
+## Initial modeling
+
+We are interested in predicting the price of the property adding  the following variables:
+
+* `Neighborhood`
+
+* `Gr_Liv_Area`, corresponding to the gross above-grade living area.
+
+* `Year_built`
+
+* `Bldg_type` corresponding to the building type
+
+1. What is the type of each of these four variables? If a variable is categorical how many different values (levels) it has
+
+```{r}
+levels(ames$Neighborhood)
+levels(ames$Bldg_Type)
+```
+
+
+Neighborhood is a categorical factor with 29 different levels. Gr_Liv_Area is a quantitative variable. Year_built is also a quantitative variable. Lastly, Bldg_type is a categorical variable with 5 levels. 
+
+
+2. Do a histogram of `Gr_Liv_Area`. How does this histogram looks  using a log scale?
+
+```{r}
+ames%>%
+  ggplot(aes(x = Gr_Liv_Area))+
+    geom_histogram()
+
+ames%>%
+  mutate(log_Gr_Liv_Area = log10(Gr_Liv_Area))%>%
+  ggplot(aes(x = log_Gr_Liv_Area))+
+    geom_histogram()
+```
+
+From the two histograms above, we see that when we use the log scale the distribution is a little more even, closer to a normal distribution. Thus, it better satisfies some of our assumptions for linearity. Without the log scale, the distribution is a little right skewed. 
+
+## Creating a recipe
+
+A recipe is a collection of steps for preprocessing a dataset. Our initial recipe will include the following steps:
+
+* We would like to make it explicit that we are modeling the `Sale_Price` (response variable) based on `Latitude` and `Longitude`, `Gr_Liv_area`, and `Bldg_type` (explanatory variables)
+
+* We would like to use a log scale for `Gr_Liv_Area`
+
+* We would like to transform all of our categorical variables into indicator variables.
+
+```{r echo=TRUE}
+ames.recipe <- 
+  recipe(Sale_Price ~ Longitude + Latitude + Gr_Liv_Area + 
+            Bldg_Type, data=ames.train) %>%
+  step_log(Gr_Liv_Area, base=10) %>%
+  step_dummy(all_nominal_predictors())
+ames.recipe
+```
+
+Once we created the recipe we can use in conjunction with a linear model, add it to a workflow and fit our workflow using our training dataset
+
+```{r echo=TRUE}
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_recipe(ames.recipe) %>%
+  add_model(lm.model) 
+
+lm.fit <- fit(lm.wflow, ames.train)
+```
+
+3. 
+a. What is the $R^2$ of the linear model you created? How do you interpret this value?
+
+```{r}
+tidy(lm.fit)
+glance(lm.fit)
+```
+
+Our new $R^2$ is 0.61, meaning that 61% of our data's variability is explained by this new model. This is a significant improvement over what we had last time, when our $R^2$ was ~0.17. 
+
+
+
+
+b. Interpret the coefficients corresponding to:
+
+* The living area of the house.
+
+Our logged living area coefficient is 0.846, meaning that we expect a one unit increase in logged living area to lead to a 0.846 unit increase in logged sale price when all other predictors are held equal. 
+
+* The type of building.
+
+To interpret type of building, we compare to the baseline type, which is single family home. When holding all other predictors constant, we see that:
+Two family condos are 0.133 logged units cheaper than single family homes,
+Duplex homes are 0.115 logged units cheaper than single family homes,
+Normal townhouses are 0.0414 logged units cheaper than single family homes, and
+End unit townhouses are 0.0598 logged units more expensive than single family homes. 
+
+
+4. Evaluate your model using the testing dataset. What is the MSE on this dataset?
+
+```{r}
+new.ames.test <- lm.fit%>%
+  augment(new_data = ames.test)
+
+rmse_vec(new.ames.test$Sale_Price, new.ames.test$.pred)^2
+
+```
+
+We see an MSE of 0.0112, which is a pretty small MSE, indicating our model is doing a decent job. However, it is important to remember we're working on a log scale so our error values will be lower. 
+
+
+
+5. Add `Year_Built` as an input variable in your existing recipe. What is the $R^2$ of your model? What is the MSE on the testing dataset?
+
+```{r}
+#Recipe Creation
+ames.recipe <- 
+  recipe(Sale_Price ~ Longitude + Latitude + Gr_Liv_Area + 
+            Bldg_Type + Year_Built, data=ames.train) %>%
+  step_log(Gr_Liv_Area, base=10) %>%
+  step_dummy(all_nominal_predictors())
+
+#Model Creation
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_recipe(ames.recipe) %>%
+  add_model(lm.model) 
+
+lm.fit <- fit(lm.wflow, ames.train)
+
+#Coefficients and Other Model Summary
+tidy(lm.fit)
+glance(lm.fit)
+
+#Prediction
+new.ames.test <- new.ames.test%>%
+  select(-starts_with(".pred"))
+
+new.ames.test <- lm.fit%>%
+  augment(new_data = ames.test)
+
+rmse_vec(new.ames.test$Sale_Price, new.ames.test$.pred)^2
+```
+
+We now have an $R^2$ of 0.733, which is a pretty solid improvement over our previous model. We see a new MSE of 0.007297, which is a sizeable drop from the previous model, when we were at 0.0112. 
+
+
+6. Add `Neighborhood` as an input variable recipe to your model from 5. What is the $R^2$ of your model? What is the MSE on the testing dataset?
+
+```{r}
+#Recipe Creation
+ames.recipe <- 
+  recipe(Sale_Price ~ Longitude + Latitude + Gr_Liv_Area + 
+            Bldg_Type + Year_Built + Neighborhood, data=ames.train) %>%
+  step_log(Gr_Liv_Area, base=10) %>%
+  step_dummy(all_nominal_predictors())
+
+#Model Creation
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_recipe(ames.recipe) %>%
+  add_model(lm.model) 
+
+lm.fit <- fit(lm.wflow, ames.train)
+
+#Coefficients and Other Model Summary
+tidy(lm.fit)
+glance(lm.fit)
+
+#Prediction
+new.ames.test <- new.ames.test%>%
+  select(-starts_with(".pred"))
+
+new.ames.test <- lm.fit%>%
+  augment(new_data = ames.test)
+
+rmse_vec(new.ames.test$Sale_Price, new.ames.test$.pred)^2
+```
+
+Our new $R^2$ is 0.801, which is another decent increase from our last model. We see a new MSE of 0.00585, which is another decent improvement. 
+
+
+
+7. 
+a. Summarize and sort the number of observations in each neighborhood. How many many neighborhoods have less than 20 observations? 
+
+```{r}
+ames.train%>%
+  count(Neighborhood, sort = TRUE)%>%
+  print(n = 30)
+
+ames.train%>%
+  count(Neighborhood)%>%
+  filter(n < 20)
+```
+
+We see that there are 6 neighborhoods that have less than 20 observations. 
+
+
+
+b. Consult the documentation for `step_other` and add a step to your recipe where you collapse neighborhoods with less than 1% of your data. Make sure to add this step before the `step_dummy` command.
+
+```{r}
+#Recipe Creation
+ames.recipe <- 
+  recipe(Sale_Price ~ Longitude + Latitude + Gr_Liv_Area + 
+            Bldg_Type + Year_Built + Neighborhood, data=ames.train) %>%
+  step_log(Gr_Liv_Area, base=10) %>%
+  step_other(Neighborhood, threshold = 0.01)%>%
+  step_dummy(all_nominal_predictors())
+```
+
+
+c. Rerun your workflow and your model. How do you interpret the coefficient of the model associated with the collapsed set of neighborhoods? What is the MSE of this new model?
+
+```{r}
+#Model Creation
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_recipe(ames.recipe) %>%
+  add_model(lm.model) 
+
+lm.fit <- fit(lm.wflow, ames.train)
+
+#Coefficients and Other Model Summary
+tidy(lm.fit)%>%print(n = 31)
+glance(lm.fit)
+
+#Prediction
+new.ames.test <- new.ames.test%>%
+  select(-starts_with(".pred"))
+
+new.ames.test <- lm.fit%>%
+  augment(new_data = ames.test)
+
+rmse_vec(new.ames.test$Sale_Price, new.ames.test$.pred)^2
+```
+
+Our new $R^2$ is 0.798, and our new MSE is 0.00591. Both of these are slight decreases from our previous model, which makes sense because we've eliminated a couple predictors. However, this step is beneficial because it lessens the number of predictors we have and makes our model slightly simpler. 
+
+To interpret the 'other' or collapsed neighborhood coefficient, we can say that if all other factors are held constant, then we'd expect a house in one of these 'other' neighborhoods to be 0.0594 units of logged sale price more expensive than a house in the baseline neighborhood, which is North_Ames. 
+
+8. 
+a. What two features are you planning to use for your first challenge?
+
+1) Our first feature is counting the number of pixels that are inked and finding what proportion of those are in the top vs bottom half of the image, and then taking the difference in those proportions. In other words, the 'diff' value represents $p_top- p_bottom$, where $p_top$ is the proportion of total ink that is in the top half and $p_bottom$ is the equivalent for the bottom half. A single pixel was defined to have ink if its value was greater than 200. We used this value because in the mnist_27 dataset they used a similar benchmark. We took this approach because we noticed that 3s are generally more symmetrical over a 'x' axis, whereas 2s are less symmetrical. So, if more of the ink is in one half, it might be a 2, whereas if the ink of a digit is equally spread out among top and bottom half we might expect it's a 3. We hypothesize that 3s will have a difference close to 0, while 2s will have a greater difference (probably heavier on the bottom). 
+
+2) Our second feature is pretty complicated to explain - for each of the 784 pixels, we calculated the average ink value (between 0 to 255). We then looked at how that average compared among 2s and 3s and found which pixels had the largest difference between their averages of 2s and 3s. This told us which pixels were most indicative of whether a value was 2 or 3. We then took each image and calculated a weighted average by looping through every pixel, multiplying its pixel value by the difference value we calculated above, and adding it to a total sum for that image. In this way, if a digit ends with a negative sum, then this would suggest it's more likely to be a 3 (the difference value we calculated was negative), whereas if it has a large sum it'd suggest it's a 2(because the difference value was positive for 2s). 
+
+b. Using the MNIST dataset select a couple of instances of the two digits assigned to your group. Calculate the two features on those instances. Are the two features similar across the two different types of digits?
+
+
+
+```{r}
+#Loading in the data
+library(caret)
+library(dslabs)
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+
+set.seed(12345)
+
+index_23 <- which(mnist$train$labels %in% c(2,3))
+sample_indices <- sample(index_23, size = 20)
+y.trial <- mnist$train$labels[sample_indices][1:20] 
+x.trial <- mnist$train$images[sample_indices,][1:20,]
+
+#Placeholder for splitting upper half and lower half
+row_column <- expand_grid(row = 1:28, col = 1:28)
+upper_half_idx <- which(row_column$row <= 14)
+lower_half_idx <- which(row_column$row >14)
+
+
+#If x > 200 then ink present, otherwise not
+test_x.trial <- x.trial > 200
+
+#Calculating proportion of ink that is in each half for each number
+test_x.trial <- cbind(rowSums(test_x.trial[,upper_half_idx]) / rowSums(test_x.trial),
+      rowSums(test_x.trial[,lower_half_idx]) / rowSums(test_x.trial),
+      rowSums(test_x.trial[,upper_half_idx]),
+      rowSums(test_x.trial[,lower_half_idx]))
+
+mnist_23 <- as_tibble(test_x.trial)%>%
+  mutate(y = y.trial,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = sample_indices)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2",
+         top_count = "V3",
+         bottom_count = "V4")
+```
+We now have the dataset and can compare this feature across 2s and 3s
+
+```{r}
+mnist_23%>%
+  group_by(y)%>%
+  summarize(meanDiff = mean(diff))
+```
+
+We see that 3s are generally more symmetrical because the difference is closer to 0(meaning equal amounts of the ink is on the top and bottom), which makes sense. On the other hand, 2s have a larger difference that is negative, indicating that more of the ink in 2s is on the bottom half, which also makes sense. 
+
+---Second Feature---
+
+The following code goes through what is described above in part a for the second feature, and the function at the end calculates the final 'feature value' for 'size' number of images. 
+
+```{r}
+
+master.df = data.frame(matrix(nrow = 784,ncol = 2))
+indicator.2 = mnist$train$labels==(2)
+indicator.2 = as_tibble(indicator.2)
+indicator.3 = mnist$train$labels==(3)
+indicator.3 = as_tibble(indicator.3)
+
+for (i in 1:784){
+tib.2 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.2) = "actual.value"
+
+Mean = cbind(indicator.2,tib.2)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[1][i,] = as.numeric(Mean)}
+
+for (i in 1:784){
+tib.3 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.3) = "actual.value"
+
+Mean = cbind(indicator.3,tib.3)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[2][i,] = as.numeric(Mean)}
+
+master.df.1 = master.df%>%
+  mutate(diff = X1 - X2)%>%
+  mutate(pos.ind = ifelse(diff>0,1,0))%>%
+  mutate(RN = row_number())%>%
+  select(diff)
+
+feature.extracter.train <- function(size){
+
+index_23 <- which(mnist$train$labels %in% c(2,3))
+y <- mnist$train$labels[index_23] 
+x <- mnist$train$images[index_23,]
+
+ i = 1
+ iterations = size
+ value.vector = vector(length = iterations)
+ for (i in 1:size){
+ binded = cbind(master.df.1,x[i,])
+ colnames(binded) = c("diff", "value")
+ binded = binded%>%    
+ mutate(product = diff*value)%>%
+   summarize(sum = sum(product))
+ value.vector[i] = as.numeric(binded)
+   
+   }
+ 
+ Return = tibble(letter = as.factor(y[1:size]),value.vector)
+ 
+ Return
+
+}
+
+
+feature.extracter.train(200)%>%
+  group_by(letter)%>%
+  summarize(meanValue = mean(value.vector))
+```
+
+We see that this feature demonstrates a start contrast between the digits, with 3s having an average value of -614936 and 2s having an average value of 634088, indicating a pretty successful feature. 
+
+Thus, both features are pretty different across digits, indicating they probably do a good job distinguishing between our two digits. 
+
+
+
+
+
+

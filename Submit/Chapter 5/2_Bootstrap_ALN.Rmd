@@ -1,0 +1,182 @@
+---
+title: "Bootstrapping"
+author: "Jaime Davila"
+date: "3/16/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+# Introduction
+
+Once more we will be using our `1`, `2`, and `7` dataset.
+
+```{r echo=TRUE}
+digits <- c("1","2","7")
+train.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/train.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+test.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/test.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+```
+
+Let's train a QDA model using our training dataset:
+
+```{r echo=TRUE}
+library(tidymodels)
+library(discrim)
+tidymodels_prefer()
+
+qda.model <- discrim_quad() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1 + x_2, data=train.127.tbl)
+
+qda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(qda.model) 
+
+qda.fit <- fit(qda.wflow, train.127.tbl)
+```
+
+1. We are interested in the proportion of `2`s that get correctly classified using our testing dataset. Calculate in an automated way this amount. *Hint* Create a confusion matrix and use the command `tidy()` to make into a tibble so that you can calculate this amount.
+
+```{r}
+qda.pred <- augment(qda.fit, new_data = test.127.tbl)
+
+total <- tidy(conf_mat(qda.pred, y, .pred_class))%>%
+  slice(4:6)%>%
+  summarize(total = sum(value))%>%
+  as.numeric()
+
+tidy(conf_mat(qda.pred, y, .pred_class))%>%
+  slice(c(4,6))%>%
+  summarize(calc_correct = 1 - sum(value) / total)%>%
+  as.numeric()
+```
+
+
+In principle the proportion of `2`s that gets correctly classified might change slightly depending on the training dataset. In the remainder of this worksheet we will assess the variability of this proportion by using a collection of different training datasets. 
+
+
+
+To accomplish this we will be using the bootstrapping technique. A bootstrap dataset is obtained by sampling with replacement from the original dataset. First, we will train a model on each bootstrap dataset. The complement of our bootstrap dataset (this subset is usually called out-of-bag dataset) will be used as our testing dataset. Finally we will calculate our confusion matrix using our model and our testing dataset.
+
+To implement this idea we will be using the function `bootstraps()` from `tidymodels`. The following exercises will guide you on how to do this.
+
+2. Create 50 bootstraps from your training dataset using the function `bootstraps()` and store in a tibble called `bootstrap.tbl`. What is 10th bootstrap dataset? What is the 10th out-of-bag dataset? (*Hint* Use the functions `analysis()` and `assessment()`). What are the sizes of 3rd and 5th bootstrap datasets? What are the sizes of the 3rd and 5th out-of-bag datasets? Why are the sizes of the bootstrap datasets the same while the sizes of the out-of-bag datasets are different?
+
+```{r}
+set.seed(12345)
+bootstrap.tbl <- bootstraps(train.127.tbl, times = 50)
+
+analysis(bootstrap.tbl[[1]][[10]])
+assessment(bootstrap.tbl[[1]][[10]])
+
+dim(analysis(bootstrap.tbl[[1]][[3]]))
+dim(analysis(bootstrap.tbl[[1]][[5]]))
+
+
+dim(assessment(bootstrap.tbl[[1]][[3]]))
+dim(assessment(bootstrap.tbl[[1]][[5]]))
+
+```
+The sizes of the bootstrap are the same because they always bootstrap until they get the same size as the training dataset. The out-of-bag dataset varies because we're randomly sampling with replacement so in some instances we might not select 580, while in other instances we might not select 575. 
+
+
+
+3. Define a function `calc_correct_twos_qda` that given a split will obtain testing and training datasets (remember to use `analysis()` and `assessment()`). The function will train a qda model using the testing dataset and calculate the proportion of missclassified 2s on the testing dataset. Test your function using a couple of the bootstraps from your previous point
+
+```{r}
+calc_correct_twos_qda <- function(split){
+  
+  #TEST/TRAIN
+  set.seed(12345)
+  split.train <- analysis(split)
+  split.test <- assessment(split)
+  
+  #MODEL 
+  qda.model <- discrim_quad() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+  recipe <- recipe(y ~ x_1 + x_2, data=split.train)
+  qda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(qda.model) 
+  qda.fit <- fit(qda.wflow, split.train)
+  
+  #PREDICTION
+  qda.pred <- augment(qda.fit, new_data = split.test)
+  
+  #PROP_CORRECT
+  total <- tidy(conf_mat(qda.pred, y, .pred_class))%>%
+  slice(4:6)%>%
+  summarize(total = sum(value))%>%
+  as.numeric()
+
+  tidy(conf_mat(qda.pred, y, .pred_class))%>%
+  slice(c(5))%>%
+  summarize(calc_incorrect = sum(value) / total)%>%
+  as.numeric()
+  
+}
+
+calc_correct_twos_qda(bootstrap.tbl[[1]][[1]])
+
+calc_correct_twos_qda(bootstrap.tbl[[1]][[3]])
+calc_correct_twos_qda(bootstrap.tbl[[1]][[5]])
+
+calc_correct_twos_qda(bootstrap.tbl$splits[[5]])
+
+
+
+
+```
+
+Finally we need to apply the function `calc_correct_twos_qda()` on all the splits from `bootstrap.tbl`. Notice that the type of the column `splits` is a `list`, so we can use the function `map_dbl()`. `map_dbl(lst, f)` applies the function `f()` to all the elements of `lst` and outputs a `double` (that is why the suffix `_dbl`). We can do this as follows:
+
+```{r echo=TRUE}
+boots.values.tbl <- bootstrap.tbl %>% 
+  mutate(prop.2s = map_dbl(splits, calc_correct_twos_qda))
+```
+
+4. Plot the histogram of the proportion of correctly classified 2s. Calculate the mean and standard deviation of this metric. Does the histogram, mean and standard deviation change a lot if you use a different set of 200 boostraps?
+
+```{r}
+
+ggplot(boots.values.tbl, aes(x = prop.2s))+
+  geom_histogram()
+
+
+mean(boots.values.tbl$prop.2s)
+sd(boots.values.tbl$prop.2s)
+
+set.seed(12345)
+bootstrap.tbl <- bootstraps(train.127.tbl, times = 200)
+
+boots.values.tbl <- bootstrap.tbl %>% 
+  mutate(prop.2s = map_dbl(splits, calc_correct_twos_qda))
+
+ggplot(boots.values.tbl, aes(x = prop.2s))+
+  geom_histogram()
+
+
+mean(boots.values.tbl$prop.2s)
+sd(boots.values.tbl$prop.2s)
+```
+
+
+
+We will be using more bootstrapping after the break when we introduce more advance modeling approaches, so stay tuned!
+
+# Remember:
+# No HW for next week (3/21-3/25)
+# Exam 1: In-class (3/24). Covers Ch. 2,3,4 and 5.1 from ISLR plus R-bootcamp (week 1 of class) and tidymodels!
+# Sample in-class exam on Tu 3/22

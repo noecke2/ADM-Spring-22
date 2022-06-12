@@ -1,0 +1,281 @@
+---
+title: "Bootstrap aggregation (bagging)"
+author: "Jaime Davila"
+date: "4/24/2021"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.show="hide", results=FALSE)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+library(dslabs)
+tidymodels_prefer()
+```
+
+# Maximal classification trees
+
+Let's start by considering the presidential polls dataset for the 2008 election (Obama vs McCain) and creating our testing/training dataset
+
+```{r echo=TRUE}
+library(dslabs)
+data("polls_2008")
+polls.2008.tbl <- tibble(polls_2008)
+polls.2008.tbl
+
+set.seed(12345)
+poll.split <- initial_split(polls.2008.tbl)
+poll.train.tbl <- training(poll.split)
+poll.test.tbl <- testing(poll.split)
+```
+
+After this we will be creating a couple of auxiliary functions:
+
+* `create_rtree`: fits a regression tree to `train.tbl` with a predefined complexity parameter `cp`.
+* `calc_rmse`: calculates the rmse for `model` on `test.tbl`.
+* `plot_model`: depicts the trends of the model using the testing dataset
+
+```{r echo=TRUE}
+create_rtree <- function(train.tbl, cp) {
+  # Set up the model, recipe and workflow
+  poll.model <-
+  decision_tree(cost_complexity=cp) %>%
+  set_mode("regression") %>%
+  set_engine("rpart")
+  poll.recipe <- recipe(margin ~ day, data=train.tbl)
+  poll.wflow <- workflow() %>%
+    add_recipe(poll.recipe) %>%
+    add_model(poll.model) 
+  # Fit the worfklow using the training dataset  
+  fit(poll.wflow, train.tbl)
+}
+
+calc_rmse <- function(model, test.tbl) {
+  augment(model, test.tbl) %>%
+    rmse(margin, .pred) %>% 
+    pull(.estimate)
+}
+
+plot_model <- function(model, test.tbl) {
+  augment(model, test.tbl) %>%
+    ggplot()+
+    geom_point(aes(day,margin))+
+    geom_step(aes(day,.pred), col="red")
+}
+```
+
+And we will be testing this functions using **maximal classification trees**, which are trees for which the complexity parameter is 0. Notice that for this type of tree, usually the other default parameters of `rpart` (e.g. `tree_depth` or `min_n`) are the ones responsible for the tree not having a node for each observation.
+
+```{r echo=TRUE, results=TRUE, fig.show='asis'}
+rtree.model <- create_rtree(poll.train.tbl, 0) 
+plot_model(rtree.model, poll.test.tbl)
+calc_rmse(rtree.model, poll.test.tbl)
+```
+
+1. Using `poll.train.tbl`, create 3 different training datasets.  Fit maximal regression trees to each of them. Using `poll.test.tbl` plot the models and calculate the rmse for each of them. Are the results very different depending on the training dataset used?
+
+```{r echo=TRUE}
+set.seed(12345)
+
+#MODEL 1
+poll.split1 <- initial_split(polls.2008.tbl)
+poll.train1.tbl <- training(poll.split1)
+poll.test1.tbl <- testing(poll.split1)
+
+rtree.model1 <- create_rtree(poll.train1.tbl, 0) 
+plot_model(rtree.model1, poll.test1.tbl)
+calc_rmse(rtree.model1, poll.test1.tbl)
+
+#MODEL 2
+
+poll.split2 <- initial_split(polls.2008.tbl)
+poll.train2.tbl <- training(poll.split2)
+poll.test2.tbl <- testing(poll.split2)
+
+rtree.model2 <- create_rtree(poll.train2.tbl, 0) 
+plot_model(rtree.model2, poll.test2.tbl)
+calc_rmse(rtree.model2, poll.test2.tbl)
+
+#MODEL 3
+
+poll.split3 <- initial_split(polls.2008.tbl)
+poll.train3.tbl <- training(poll.split3)
+poll.test3.tbl <- testing(poll.split3)
+
+rtree.model3 <- create_rtree(poll.train3.tbl, 0) 
+plot_model(rtree.model3, poll.test3.tbl)
+calc_rmse(rtree.model3, poll.test3.tbl)
+
+```
+
+2. Apply the previous 3 models to `poll.test.model` and create a new column `.pred` with the average of the 3 models. Plot the average and calculate the rmse. Are the results an improvement over the model at the beginning of this section?
+
+```{r}
+avg.poll.tbl <- augment(rtree.model1, poll.test.tbl)%>%
+  augment(x = rtree.model2)%>%
+  augment(x = rtree.model3)%>%
+  mutate(avg_pred = (.[[3]] + .[[4]] + .[[5]])/3)
+
+avg.poll.tbl%>%
+  ggplot()+
+    geom_point(aes(day,margin))+
+    geom_step(aes(day,avg_pred), col="red")
+
+avg.poll.tbl%>%
+  rmse(margin, avg_pred)%>%
+  pull(.estimate)
+
+```
+
+
+# Bagging models from scratch
+
+Bootstrap aggregation or bagging is based on the following two key ideas:
+
+* Maximal trees are very sensitive to their training dataset. Slightly different training datasets can result in very different trees.
+ 
+* If we have $n$ *independent* variables $X_1, \dots, X_n$ with a standard deviation $\sigma$, the standard deviation of their average is $\frac {\sigma} {\sqrt n}$. This implies that we can control the error of a collection of maximal trees by considering their average (this principle is sometimes called "the wisdom of the crowd")
+
+In bagging we average the results of multiple maximal trees that are trained on slightly different bootstrapped training datasets. Let's start by creating a function `create_bag_rtree` that creates a bootstrap of our training dataset `train.tbl`, fits a maximal tree and outputs the results of that tree evaluated on our testing dataset `test.tbl`
+
+```{r echo=TRUE, fig.show="asis"}
+create_bag_rtree <- function(id, train.tbl, test.tbl) {
+  # Set up the bootstrap
+  bootstrap.split <- bootstraps(train.tbl, times=1)  
+  bootstrap.train.tbl <- analysis(bootstrap.split$splits[[1]])
+  
+  # Set up the model, recipe and workflow
+  poll.model <-
+  decision_tree(cost_complexity=0) %>%
+  set_mode("regression") %>%
+  set_engine("rpart")
+  poll.recipe <- recipe(margin ~ day, data=bootstrap.train.tbl)
+  poll.wflow <- workflow() %>%
+    add_recipe(poll.recipe) %>%
+    add_model(poll.model) 
+  # Fit the worfklow using the training dataset  
+  poll.fit <- fit(poll.wflow, bootstrap.train.tbl)
+  augment(poll.fit, test.tbl) %>%
+    mutate(id=id)
+}
+```
+
+We will be doing this process 20 times by making use of the `map_dfr` function and we will plot each of our bootstrapped models. Notice how every model is slightly different than the others.
+
+```{r echo=TRUE, fig.show="asis"}
+set.seed(12345)
+bag.tbl <- map_dfr(1:20, create_bag_rtree, poll.train.tbl, poll.test.tbl)
+
+ggplot(bag.tbl)+
+    geom_point(aes(day,margin))+
+    geom_step(aes(day,.pred), col="red")+
+    facet_wrap(vars(id))
+```
+
+Finally we will average and plot the results across each tree and calculate our rmse, which is an improvement over our previous results
+
+```{r echo=TRUE, results=TRUE, fig.show="asis"}
+bag.summary.tbl <- bag.tbl %>%
+  group_by(day) %>%
+  summarize(.pred = mean(.pred),
+            margin = mean(margin)) 
+
+ggplot(bag.summary.tbl)+
+  geom_point(aes(day,margin))+
+    geom_step(aes(day,.pred), col="red")
+
+rmse(bag.summary.tbl, margin, .pred )
+```
+
+# Bagging models using `tidymodels()`
+
+ We will be using the implementation of bagging from the `ranger` package. As before we will be creating a function `create_bag` that takes a training dataset and the number of trees that we are combining (`ntrees`).
+
+```{r echo=TRUE}
+library(ranger)
+create_bag <- function(train.tbl, ntrees) {
+  # Set up the model, recipe and workflow
+  poll.bag.model <-
+  rand_forest(trees=ntrees) %>%
+  set_mode("regression") %>%
+  set_engine("ranger")
+
+  poll.recipe <- recipe(margin ~ day, data=train.tbl)
+  
+  poll.wflow <- workflow() %>%
+    add_recipe(poll.recipe) %>%
+    add_model(poll.bag.model) 
+  # Fit the worfklow using the training dataset  
+  fit(poll.wflow, train.tbl)
+}
+```
+
+First, let's look at the effect of adding trees one by one. Notice that as the number of trees becomes larger, our predicted value becomes less rugged.
+
+```{r echo=TRUE, results=TRUE, fig.show='asis'}
+set.seed(12345)
+for (i in seq(1,5, by=1)) {
+  bag.model <- create_bag(poll.train.tbl, i)
+  print(calc_rmse(bag.model, poll.test.tbl))
+  print(plot_model(bag.model, polls.2008.tbl))
+}
+```
+
+In bagging, usually the more the merrier, and around 100s of trees we get diminishing results. Let's settle for 100 trees and see the resulting model
+
+```{r echo=TRUE, results=TRUE, fig.show='asis'}
+set.seed(12345)
+bag.model <- create_bag(poll.train.tbl,100)
+calc_rmse(bag.model, poll.test.tbl)
+plot_model(bag.model, polls.2008.tbl)
+```
+
+3. Using 10-fold cross validation and the following grid to identify the optimal value for `min_n`, fixing the number of trees to 100. What's the RMSE on the testing dataset? Plot your resulting model and compare it to the model where `min_n` was not optimized at the beginning of the section.
+
+```{r echo=TRUE}
+set.seed(12345)
+poll.folds <- vfold_cv(poll.train.tbl, v = 10)
+poll.grid <- grid_regular(min_n(), levels = 25)
+
+poll.bag.model <-
+  rand_forest(trees=100, min_n = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("ranger")
+
+poll.recipe <- recipe(margin ~ day, data=poll.train.tbl)
+  
+poll.wflow <- workflow() %>%
+    add_recipe(poll.recipe) %>%
+    add_model(poll.bag.model) 
+
+poll.res <-
+  tune_grid(
+    poll.wflow,
+    resamples = poll.folds,
+    grid = poll.grid)
+
+autoplot(poll.res)
+
+best.parameter <- select_by_one_std_err(poll.res, desc(min_n), metric = "rmse")
+
+poll.final.wf <- finalize_workflow(poll.wflow, best.parameter)
+poll.final.fit <- fit(poll.final.wf, data = poll.train.tbl)
+
+augment(poll.final.fit, poll.test.tbl)%>%
+  rmse(margin, .pred)
+
+augment(poll.final.fit, poll.test.tbl)%>%
+  ggplot()+
+    geom_point(aes(day,margin))+
+    geom_step(aes(day,.pred), col="red")
+
+plot_model(poll.final.fit, polls.2008.tbl)
+
+
+
+```

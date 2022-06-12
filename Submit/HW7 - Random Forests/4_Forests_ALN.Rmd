@@ -1,0 +1,496 @@
+---
+title: "Random Forests"
+author: "Andrew Noecker"
+date: "4/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.show="hide", results=FALSE)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+library(dslabs)
+tidymodels_prefer()
+```
+
+
+# Introduction
+
+Today we will be using a small subset of the MNIST dataset, by selecting 1000 digits for both training and testing:
+
+```{r echo=TRUE}
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+set.seed(2022)
+index <- sample(nrow(mnist$train$images), 1000)
+digit.train.tbl <- as_tibble (mnist$train$images[index,]) %>%
+  mutate(digit = factor(mnist$train$labels[index]))
+
+index <- sample(nrow(mnist$test$images), 1000)
+digit.test.tbl <- as_tibble (mnist$test$images[index,]) %>%
+  mutate(digit = factor(mnist$test$labels[index]))
+```
+
+And as before let's make a couple of functions to plot particular digits from our dataset
+
+```{r echo=TRUE, fig.show='asis'}
+plotImage <- function(dat,size=28){
+  imag <- matrix(dat,nrow=size)[,28:1]
+  image(imag,col=grey.colors(256), xlab = "", ylab="") 
+}
+
+plot_row <- function(tbl) {
+  ntbl <- tbl %>%
+    select(V1:V784)
+  plotImage(as.matrix(ntbl))
+}
+```
+
+```{r echo=TRUE, fig.show='asis'}
+# Plot the 100th digit from training
+plot_row(digit.train.tbl[100,])
+# Plot the 13th digit from testing
+plot_row(digit.test.tbl[12,])
+```
+
+As in our last homework, we are interested in doing multi-digit classification.
+
+# Maximal classification trees
+
+1. a. Fill out the details of the function `create_rtree` which creates a maximal tree for doing multi-digit classification. The function receives a training dataset and returns a fitted regression tree. Create a regression tree called `digit.rtree.model` using the function `create_rtree` on  your training dataset.
+
+```{r echo=TRUE}
+create_rtree <- function (train.tbl) {
+  rtree.model <- decision_tree(cost_complexity = 0)%>%
+    set_mode("classification")%>%
+    set_engine("rpart")
+  rtree.recipe <- recipe(digit ~ ., data = train.tbl)
+  
+  model.wflow <- workflow()%>%
+    add_model(rtree.model)%>%
+    add_recipe(rtree.recipe)
+  
+  fit(model.wflow, train.tbl)
+}
+
+digit.rtree.model <- create_rtree(digit.train.tbl)
+```
+
+b. Calculate the accuracy and confusion matrix of `digit.rtree.model` using your testing dataset
+
+```{r}
+augment(digit.rtree.model, digit.test.tbl)%>%
+  accuracy(digit, .pred_class)
+
+augment(digit.rtree.model, digit.test.tbl)%>%
+  conf_mat(digit, .pred_class)
+```
+
+
+We can define a function that will allow us to plot the pixel importance for a particular model.
+
+```{r echo=TRUE}
+create_image_vip <- function(model.fit) {
+  # Creates the importance image
+  imp.tbl <- model.fit %>%
+    extract_fit_engine() %>%
+    vip::vi() %>%
+    mutate(col=as.double(str_remove(Variable,"V")))
+  mat <- rep(0, 28*28)
+  mat[imp.tbl$col] <- imp.tbl$Importance
+  mat
+}
+```
+
+Let's use this function to show the important pixels for our model:
+
+```{r echo=TRUE, fig.show='asis'}
+create_image_vip(digit.rtree.model) %>%
+  plotImage()
+```
+
+# Using bootstrapping
+
+Bootstrapping allows us to create new training datasets by sampling with replacement from our training dataset. Let's create 3 bootstrap samples from our original training dataset:
+
+```{r echo=TRUE, fig.show="asis"}
+set.seed(12345)
+bootstrap.split <- bootstraps(digit.train.tbl, times=3)
+bootstrap.split
+```
+
+Notice how `bootstrap.split` is a tibble. Also note that we can access the 2nd bootstrap by using the command:
+
+```{r echo=TRUE, results=TRUE}
+analysis(bootstrap.split$splits[[2]])
+```
+
+2. Fit classification trees to each bootstrapped training dataset and plot the variable importance as an image for each model. Are there pixels that are common to the three models?
+
+```{r}
+digit.rtree.model1 <- create_rtree(analysis(bootstrap.split$splits[[1]]))
+digit.rtree.model2 <- create_rtree(analysis(bootstrap.split$splits[[2]]))
+digit.rtree.model3 <- create_rtree(analysis(bootstrap.split$splits[[3]]))
+
+create_image_vip(digit.rtree.model1) %>%
+  plotImage() 
+
+create_image_vip(digit.rtree.model2) %>%
+  plotImage()
+
+create_image_vip(digit.rtree.model3) %>%
+  plotImage()
+
+```
+
+Overall, we don't see a major difference between the 3 images of pixel importance. For the first bootstrap model, we see the important pixels are a little more slanted from bottom left to top right. The second model is more centered in the middle, but the most important (lighter) pixels also seem to go from bottom left to top right. The third one is also much more centered, with the lighter pixels are a little more all over the center with less of a direction.   
+
+
+
+# Remembering bagging
+
+In bagging we combine a fixed amount of trees which are trained on bootstraps of our training dataset. Let's create a bagging model by leveraging the function `use_ranger` which generates code that we can copy/paste to create our model.
+
+```{r echo=TRUE, results=TRUE}
+library(usemodels)
+use_ranger(digit~., data=digit.train.tbl, tune=FALSE)
+```
+
+We will modify the generated code as follows:
+
+* We will be using `trees=100` so that our code runs faster
+* We will be using `mtry=784` so that make sure that we are using all of our variables for each of our classification trees.
+* We will add the parameter `importance="impurity"`, so that we can determine the importance of the variables in our model. 
+
+```{r echo=TRUE}
+ranger_recipe <- 
+  recipe(formula = digit ~ ., data = digit.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=784) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger", importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+```
+
+Finally let's fit our model on the training dataset and calculate our accuracy on the testing dataset. Notice how our bagging model improves significantly over individual maximal classification trees
+
+```{r echo=TRUE, results=TRUE}
+digit.bag.model <- fit(ranger_workflow, digit.train.tbl)
+
+augment(digit.bag.model, digit.test.tbl) %>%
+  accuracy(truth=digit, estimate= .pred_class)
+
+augment(digit.bag.model, digit.test.tbl) %>%
+  conf_mat(truth=digit, estimate= .pred_class)
+```
+
+Notice that the variable importance in a bag is the sum of the variable importance across all splits for all  trees. We can plot our variable importance for maximal trees and for our bagging model below. Notice how in bagging more pixels end up being used, however some pixels in the middle of the image are used repetitively
+
+```{r fig.show="asis", echo=TRUE}
+create_image_vip(digit.rtree.model) %>%
+  plotImage()
+
+create_image_vip(digit.bag.model) %>%
+  plotImage()
+```
+
+# Forests
+
+Let's remember that the standard deviation of  $\frac{(X_1 + \dots + X_n)}{n}$ is $\frac {\sigma} {\sqrt n}$ if $X_1, \dots, X_n$ are *independent*. In practice the outcome of a maximal tree can be quite correlated with the outcome of a different maximal tree since some variables are dominant when we do splits over our training data (think for examples the pixels in the center of our digit images)
+
+In *random forests* we try to decorrelate each of these trees by selecting a random fraction of the variables at each level of the tree, to force different trees to not be related to each other. In practice the number of variables can be selected by using the parameter `mtry` and usually is:
+
+* $\frac{n}{3}$ for regression trees
+* $\sqrt{n}$ for classification trees.
+
+This can be implemented using the following code
+
+```{r echo=TRUE}
+ranger_recipe <- 
+  recipe(formula = digit ~ ., data = digit.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=28) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger",importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+digit.forest.model <- fit(ranger_workflow, digit.train.tbl)
+```
+
+Notice that we can calculate as before our accuracy and confusion matrix and we get an improvement over our bagging approach:
+
+```{r echo=TRUE, results=TRUE}
+augment(digit.forest.model, digit.test.tbl) %>%
+  accuracy(truth=digit, estimate= .pred_class)
+
+augment(digit.forest.model, digit.test.tbl) %>%
+  conf_mat(truth=digit, estimate= .pred_class)
+```
+
+Finally, let's plot our variable importance for our three methods:
+
+```{r fig.show="asis", echo=TRUE}
+create_image_vip(digit.rtree.model) %>%
+  plotImage()
+
+create_image_vip(digit.bag.model) %>%
+  plotImage()
+
+create_image_vip(digit.forest.model) %>%
+  plotImage()
+```
+
+Notice that when compared to our bagging model, our random forest starts using more pixels in our image.
+
+
+# Tissue classification
+
+In the next set of exercises we will be issue the `tissue_gene_expression` dataset.
+
+```{r echo=TRUE, results=TRUE}
+library(dslabs)
+data(tissue_gene_expression)
+
+tissue.gene.tbl <- tissue_gene_expression$x %>%
+  as_tibble() %>%
+  mutate(tissue = as.factor(tissue_gene_expression$y))
+
+set.seed(4272022)
+tissue.split <- initial_split(tissue.gene.tbl, prop=0.5)
+tissue.train.tbl <- training(tissue.split)
+table(tissue.train.tbl$tissue)
+tissue.test.tbl <- testing(tissue.split)
+```
+
+3.  Create an optimal classification tree to predict tissue type by selecting the optimal `cp` using 10-fold cross-validation. Calculate the accuracy and confusion matrix using your testing dataset. What do you observe happening for placenta?
+
+```{r}
+set.seed(4272022)
+tissue.folds <- vfold_cv(tissue.train.tbl, v = 10)
+
+
+tissue.model <-
+  decision_tree(cost_complexity=tune()) %>%
+  set_mode("classification") %>%
+  set_engine("rpart")
+
+  tissue.recipe <- recipe(tissue ~ ., data=tissue.train.tbl)
+
+
+  tissue.wflow <- workflow() %>%
+    add_recipe(tissue.recipe) %>%
+    add_model(tissue.model)
+  
+  tissue.grid <- 
+    grid_regular(cost_complexity(), levels = 4)
+  
+  tissue.res <-
+    tune_grid(
+      tissue.wflow,
+      resamples = tissue.folds,
+      grid = tissue.grid)
+  
+  best.cp <- select_best(tissue.res, desc(cost_complexity), metric = "accuracy")
+  tissue.final.wf <- finalize_workflow(tissue.wflow, best.cp)
+  tissue.final.fit <- fit(tissue.final.wf, tissue.train.tbl)
+  
+  augment(tissue.final.fit, tissue.test.tbl)%>%
+    accuracy(tissue, .pred_class)
+  
+  augment(tissue.final.fit, tissue.test.tbl)%>%
+    conf_mat(tissue, .pred_class)
+```
+
+We see an accuracy of 92.6%, pretty good overall. We also see that none of the placentas are correctly classified (0 in that diagonal slot of the confusion matrix). Granted, there are only 2 placentas in our testing dataset, but none were correctly classified. 
+
+
+4. From the previous point we notice that missclassified all of the placentas. Note that the number of placentas in our dataset is six (four of them in training) , and that, by default, `rpart` requires 20 observations before splitting a node. Hence it is not possible to have a leaf where placentas are the majority when using our default `min_n`. Rerun the analysis in 3 by setting up `min_n=1`. Does the accuracy increase? Look at the confusion matrix again. Calculate the top-5 most important features by using `vip`. Check in `genecards` a couple of the genes that you obtain and argue if they make biological sense.
+
+```{r}
+set.seed(4272022)
+tissue.folds <- vfold_cv(tissue.train.tbl, v = 10)
+
+
+tissue.model <-
+  decision_tree(cost_complexity=tune(), min_n = 1) %>%
+  set_mode("classification") %>%
+  set_engine("rpart")
+
+  tissue.recipe <- recipe(tissue ~ ., data=tissue.train.tbl)
+
+
+  tissue.wflow <- workflow() %>%
+    add_recipe(tissue.recipe) %>%
+    add_model(tissue.model)
+  
+  tissue.grid <- 
+    grid_regular(cost_complexity(), levels = 4)
+  
+  tissue.res <-
+    tune_grid(
+      tissue.wflow,
+      resamples = tissue.folds,
+      grid = tissue.grid)
+  
+  best.cp <- select_best(tissue.res, desc(cost_complexity), metric = "accuracy")
+  tissue.final.wf <- finalize_workflow(tissue.wflow, best.cp)
+  tissue.final.fit <- fit(tissue.final.wf, tissue.train.tbl)
+  
+  augment(tissue.final.fit, tissue.test.tbl)%>%
+    accuracy(tissue, .pred_class)
+  
+  augment(tissue.final.fit, tissue.test.tbl)%>%
+    conf_mat(tissue, .pred_class)
+```
+
+The accuracy stays, the same here, but we now correctly classify the 2 placentas in our testing dataset. 
+
+```{r}
+#IMPORTANCE
+tissue.final.fit %>%
+  extract_fit_engine() %>%
+  vip::vip()
+```
+
+We see BIN1, GPM6B, COGALT2, CLIP3, and SHANK2 are the 5 most important genes. BIN1 is a tumor suppressor, GPM6B encodes a protein that is present in most brain regions. COLGALT2 is predicted to be involved in collagen fibril organizing. Because most of these are involved with proteins and other tissues it makes sense they show up on the importance scale. 
+
+
+
+5. Repeat 4, by using a bagging model with `100` trees (notice  `min_n=1`). 
+
+```{r}
+ranger_recipe <- 
+  recipe(formula = tissue ~ ., data = tissue.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=500, min_n = 1) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger", importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+tissue.bag.fit <- fit(ranger_workflow, tissue.train.tbl)
+
+augment(tissue.bag.fit, tissue.test.tbl)%>%
+  accuracy(tissue, .pred_class)
+
+augment(tissue.bag.fit, tissue.test.tbl)%>%
+  conf_mat(tissue, .pred_class)
+```
+
+We see an accuracy of 97.9%, which is REALLY good. 
+
+```{r}
+tissue.bag.fit %>%
+  extract_fit_engine() %>%
+  vip::vip()
+```
+
+Here we see BIN1 and GPA33 as far and away most important. 
+
+
+
+6. Repeat 5, using a random forest with 100 trees.
+
+```{r}
+set.seed(4272022)
+ranger_recipe <- 
+  recipe(formula = tissue ~ ., data = tissue.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=23, min_n = 1) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger", importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+tissue.forest.fit <- fit(ranger_workflow, tissue.train.tbl)
+
+augment(tissue.forest.fit, tissue.test.tbl)%>%
+  accuracy(tissue, .pred_class)
+
+augment(tissue.forest.fit, tissue.test.tbl)%>%
+  conf_mat(tissue, .pred_class)
+```
+
+We see an accuracy of 1, meaning that every observation was predicted correctly!
+
+```{r}
+tissue.forest.fit %>%
+  extract_fit_engine() %>%
+  vip::vip()
+
+```
+
+We see that GPM6B, CLIP3, and BIN1 are still the most important, similar to our prior models for the most part. 
+
+
+7. Repeat 6 but this time the optimal `mtry` using 10-fold cross validation. For values of `mtry` use at least 10 values from 50 to 200. Compare the top-5 most important variables with what you got in 5 and in 4.
+
+```{r}
+set.seed(4272022)
+tissue.folds <- vfold_cv(tissue.train.tbl, v = 10)
+
+ranger_recipe <- 
+  recipe(formula = tissue ~ ., data = tissue.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=tune(), min_n = 1) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger", importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec)
+
+tissue.grid <- tibble(mtry = seq(50, 200, by = 10))
+
+tissue.res <-
+    tune_grid(
+      ranger_workflow,
+      resamples = tissue.folds,
+      grid = tissue.grid)
+
+autoplot(tissue.res)
+
+best.mtry <- select_best(tissue.res, metric = "accuracy")
+tissue.forest.final.wflow <- finalize_workflow(ranger_workflow, best.mtry)
+tissue.forest.final.fit <- fit(tissue.forest.final.wflow, tissue.train.tbl)
+
+augment(tissue.forest.final.fit, tissue.test.tbl)%>%
+  accuracy(tissue, .pred_class)
+
+augment(tissue.forest.final.fit, tissue.test.tbl)%>%
+  conf_mat(tissue, .pred_class)
+
+tissue.forest.final.fit %>%
+  extract_fit_engine() %>%
+  vip::vip()
+
+```
+
+
+We once again see an accuracy of 100%, which occurred when we set mtry to 60. Our most important predictors were GPA33, COLGALT2, CAPN3, and BIN1. Most of those were carry overs from previous models, although I don't remember seeing CAPN3 in the top 5, so it's interesting it showed up this time. 
+
+

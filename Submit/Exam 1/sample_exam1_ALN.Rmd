@@ -1,0 +1,372 @@
+---
+title: "ADM Sample Exam 1"
+author: "Andrew Noecker"
+date: "3/21/22"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+\newcommand{\pledgeline}{
+\setlength{\unitlength}{1in}
+\begin{picture}(6, .125)
+\put(0,0){\line(1,0){4}}
+\end{picture}
+}
+
+\newcommand{\ret}{
+\vspace{1cm} }
+\newcommand{\reta}{
+\vspace{.5cm} }
+\newcommand{\retb}{
+\vspace{2.5cm} }
+\newcommand{\retc}{
+\vspace{3.2cm} 
+}
+
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(dslabs)
+library(discrim)
+tidymodels_prefer()
+```
+
+### Exam 1 Guidelines
+
+- You have the entire class time (80 minutes) to complete this exam.  
+
+- Please make sure to save *immediately* your work in your submit folder. By the end of class time save the last version of your work and *don't* modify it afterwards.
+
+- You are to work completely independently on the exam. 
+
+- You are allowed to use your class notes, moodle, worksheets, homeworks, textbooks, plus the "Help" feature from Rstudio.
+
+- You **are not** permitted to do web searches.
+
+- Please silence your cell phone.  Place it and any other connected devices in your pack and do not access them for any reason.
+
+
+For questions that ask for interpretations and explanations, usually no more than a sentence or two is needed for justification.  Be thorough, but do not “brain dump”.  For problems with multiple parts, be aware that you can complete later parts successfully whether or not earlier parts are correct. 
+
+Do not spend too long on any one question. If you are not sure about an answer, write a note detailing your concern.
+
+
+**PLEDGE:**  I pledge on my honor that I have neither received nor given assistance during this exam nor have I witnessed others receiving assistance, and I have followed the guidelines as described above.  
+
+\vspace{3mm}
+
+**SIGNATURE: Andrew Noecker** \pledgeline
+
+$\bigcirc$ I have intentionally not signed the pledge.
+
+\vspace{3mm}
+
+
+# Introduction
+
+The dataset from The Pudding ["Baking the Most Average Chocolate Chip Cookie"](https://pudding.cool/2018/05/cookies/) collects over 200 recipes of chocolate chip cookies and their popularity. Let's start by loading the dataset using:
+
+```{r warning=FALSE, message=FALSE}
+url <- "https://raw.githubusercontent.com/the-pudding/data/master/cookies/choc_chip_cookie_ingredients.csv"
+recipe.raw.tbl <- read_csv(url)
+```
+
+Here is some brief information about the columns:
+
+* Ingredient: The name of the ingredient used for a chocolate chip cookie.
+* Text: The text obtained from the recipe that makes reference to the ingredient.
+* Recipe_Index: A unique identifier associated with each recipe.
+* Rating: The online rating of the recipe.
+* Quantity: How much of a particular ingredient is required.
+* Unit: The units in which the ingredient is measured.
+
+# Wrangling (20 points)
+
+Before we start our analysis we need to clean and make sure our dataset is in the right shape. We will divide that into the following three steps:
+
+## Step One (5 points)
+
+Create a tibble `recipe.wide.tbl` with columns representing each ingredient and rows for each  recipe. Make sure that in case of duplicate entries take the mean of the multiple entries.
+
+*Hint:* Make sure to use the parameters and `values_fn` from your pivoting function.
+
+```{r}
+recipe.wide.tbl <- recipe.raw.tbl%>%
+  pivot_wider(id_cols = "Recipe_Index", names_from ="Ingredient", values_from = "Quantity", values_fn = ~mean(.x, na.rm = TRUE))
+#TO KEEP RATINGS THEN LEFT JOIN WITH RATINGS
+
+recipe.wide.tbl <- recipe.raw.tbl%>%
+  select(Ingredient, Recipe_Index, Quantity, Rating)%>%
+  pivot_wider(names_from = "Ingredient",
+              values_from = "Quantity", 
+              values_fn = mean)
+
+recipe.raw.tbl%>%
+  select(Ingredient, Recipe_Index, Quantity, Rating)%>%
+  pivot_wider(names_from = "Ingredient",
+              values_from = "Quantity", 
+              values_fn = mean)
+```
+
+
+
+## Step two (5 points )
+
+Describe in your own words what the following code does. *Do not* describe what each line of code does, but what is the overall idea that the code is implementing.
+
+```{r echo=TRUE}
+recipe.filter.tbl <- recipe.wide.tbl %>%
+  filter(!is.na(Rating)) %>%
+  select(Recipe_Index, Rating, `all purpose flour`, `semisweet chocolate chip`, 
+         "butter", "sugar") %>%
+  rename("flour"=`all purpose flour`,
+         "chocolate"=`semisweet chocolate chip`) %>%
+  filter(!(is.na(flour) | is.na(chocolate) | is.na(butter) | is.na(sugar)))
+```
+
+It removes any values that have na's for Rating and or any values that have na's for flour, chocolate, butter, or sugar. It also focuses our dataset to 4 key ingredients: flour, chocolate, butter, and sugar. 
+
+## Step Three (5 points)
+
+Create a new tibble `recipe.final.tbl` that has new variables representing the proportions of flour, chocolate, butter and sugar in the recipe (name your variables `prop.flour`, `prop.chocolate`, `prop.butter` and `prop.sugar`) 
+
+```{r}
+#mutate to creat total, then mutate to get prop
+
+recipe.final.tbl <- recipe.filter.tbl%>%
+  mutate(total = flour + chocolate + butter + sugar,
+         prop.flour = flour /total,
+         prop.chocolate = chocolate/total,
+         prop.butter = butter / total, 
+         prop.sugar = sugar / total)
+```
+
+
+## Step Four (5 points)
+
+Create a boxplot representing the proportions of the four ingredients in your dataset
+
+```{r}
+# Need to pivot
+recipe.final.tbl%>%
+  select(7:11)%>%
+  pivot_longer(2:5, names_to = "ingredient", values_to = "value")%>%
+  ggplot()+
+    geom_boxplot(aes(x = ingredient, y =value))
+
+
+```
+
+
+
+# Modelling (40 points)
+
+Make sure that the tibble you obtained from your wrangling has 55 observations and 11 variables. In case you ran into problems you can use the following code for the next points:
+
+```{r echo=TRUE}
+recipe.tbl <-  tibble(read.table("~/Mscs 341 S22/Class/Data/recipe.Rdata"))
+dim(recipe.tbl)
+```
+
+
+## Step One (10 points)
+
+We are interested in forecasting how good a recipe will be based on the proportion of the four key ingredients (flour,chocolate, butter and sugar). What are your input and response variables? Is this a classification or prediction problem?
+
+This is a prediction problem, because our response variable in this case is Rating, which is a quantitative variable. Our input variables are proportion of the four key ingredients, so prop.flour, prop.chocolate, prop.butter, and prop.sugar. 
+
+
+## Step Two (20 points)
+
+We start by dividing our dataset into testing and training as follows
+
+```{r echo=TRUE}
+#Training/Testing dataset
+set.seed(54321)
+recipe.split <- initial_split(recipe.tbl)
+recipe.train.tbl <- training(recipe.split)
+recipe.test.tbl <- testing(recipe.split)
+```
+
+We would like to use `tidymodels()` to create a KNN model to forecast the rating based on the proportion of flour, chocolate and butter (the proportion of sugar is 1 minus the other ones). Using 10-fold cross validation, plot the `rmse` across `neighbors=`$5,10,\dots,30$ and using the plot find the optimal number of neighbors. Using your own words in a paragraph or two, describe how the 10-fold cross validation process works on this instance.
+
+```{r}
+set.seed(54321)
+knn.model <- nearest_neighbor(neighbors = tune()) %>%
+    set_engine("kknn")%>%
+    set_mode("regression")
+
+recipe <- recipe(Rating ~ prop.flour + prop.chocolate + prop.butter, data=recipe.train.tbl)
+
+knn.wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+# Neighbors optimization using CV
+recipe.folds <- vfold_cv(recipe.train.tbl, v = 10)
+recipe.grid<- grid_regular(neighbors(range = c(5, 30)), levels = 6)
+recipe.grid
+
+tune.results <- tune_grid(
+  object = knn.wf,
+  resamples = recipe.folds, 
+  grid = recipe.grid
+)
+autoplot(tune.results)
+autoplot(tune.results, metric = "rmse")
+
+show_best(tune.results, metric = "rmse")
+
+```
+
+Looking at the plot and the 'show_best' call, we see that the optimal number of neighbors is 20, very closely followed by 30 and 25. 
+
+In this instance, we use 10-fold cross validation, which is a process that repeats for each value of k that we try (5, 10, ... 30). At each value of k, we take the training dataset and split it into 10 parts. We then run 10 different models for the same value of k, but each of these models uses a different one of the 10 chunks of the training data as its testing data (validation set). Thus, each time we train the model, a different 9 chunks are being used and the model is being tested on a different chunk. For each of these 10 different models, the rmse is obtained, and then at the end the mean of those 10 values is the final rmse for that value of k. We repeat this process for each value of k, so essentially we run 10 models for each value of k, get the mean rmse at each value, and take the minimum of those means to see which value of k works best. 
+
+
+## Step Three (10 points)
+
+The $R^2$ is the squared correlation between the response variable and the model's prediction and can be calculated using `rsq()` function. Using your results from `Step Two` select the optimal number of neighbors based on the $R^2$ and evaluate the $R^2$ on the testing dataset. How does it compare to the $R^2$ that you calculated using cross-validation? 
+
+
+```{r}
+show_best(tune.results, metric = "rsq")
+best.neighbor <- select_best(tune.results, neighbors, metric = "rsq")
+knn.final.wf <- finalize_workflow(knn.wf, best.neighbor)
+knn.final.fit <- fit(knn.final.wf, recipe.train.tbl)
+
+pred.recipe <- augment(knn.final.fit, recipe.test.tbl)
+  rsq(pred.recipe, truth = Rating, estimate = .pred)
+```
+
+We see an $R^2$ value that is 0.0789, which is significantly lower than the $R^2$ from our optimal number of neighbors model - that model yielded an $R^2$ of 0.463, so this is a sharp drop off in $R^2$ when we evalaute the $R^2$ on the testing dataset in comparison to what we calculated during cross-validation. 
+
+
+# Aiming for the Stars (40 points)
+
+We will be using the `stars` dataset from the `dslabs` package. More information on this dataset can be found using `?stars`
+
+```{r echo=TRUE}
+data(stars)
+stars.tbl <- tibble(stars) 
+```
+
+## Part one (15 points)
+
+Subset your dataset to only stars of type A,B,K and M. Plot the magnitude and temperature and the type of star using color. Based on this information, would LDA or QDA provide a better model?
+
+
+```{r}
+stars.filter.tbl <- stars.tbl%>%
+  filter(type %in% c("A", "B", "K", "M"))
+
+stars.filter.tbl%>%
+  ggplot(aes(x = magnitude, y = temp, color = type))+
+    geom_point()
+```
+
+I would say that QDA would provide a better model in this instance - QDA does not operate under the assumption that each group has equal standard deviations (which LDA does), and I think we can see in the plot that A and K (and M to a lesser extent) have smaller standard deviations in comparison than B. We want to make sure we don't make any unjustfiable assumptions, so QDA is a good bet here.
+
+LDA - splitting / differentiating by lines, 
+QDA - splitting by curves
+
+## Part two (15 points)
+
+As usual let's create our training/testing dataset
+```{r echo=TRUE}
+#Training/Testing dataset
+set.seed(12345)
+stars.split <- initial_split(stars.filter.tbl)
+stars.train.tbl <- training(stars.split)
+stars.test.tbl <- testing(stars.split)
+```
+
+Implement an LDA and QDA model that would predict the type of star. Based on the confusion matrix what model does a better job? Explain briefly why.
+
+```{r}
+#LDA
+lda.model <- discrim_linear()%>%
+  set_engine("MASS")%>%
+  set_mode("classification")
+
+recipe <- recipe(type ~ magnitude + temp, data = stars.train.tbl)
+
+lda.wflow <- workflow()%>%
+  add_recipe(recipe)%>%
+  add_model(lda.model)
+
+lda.fit <- fit(lda.wflow, stars.train.tbl)
+
+pred.lda.tbl <- lda.fit%>%
+  augment(new_data = stars.test.tbl)
+
+conf_mat(pred.lda.tbl, type, .pred_class)
+```
+
+
+
+```{r}
+#QDA
+qda.model <- discrim_quad()%>%
+  set_engine("MASS")%>%
+  set_mode("classification")
+
+recipe <- recipe(type ~ magnitude + temp, data = stars.train.tbl)
+
+qda.wflow <- workflow()%>%
+  add_recipe(recipe)%>%
+  add_model(qda.model)
+
+qda.fit <- fit(qda.wflow, stars.train.tbl)
+
+pred.qda.tbl <- qda.fit%>%
+  augment(new_data = stars.test.tbl)
+
+conf_mat(pred.qda.tbl, type, .pred_class)
+conf_mat(pred.lda.tbl, type, .pred_class)
+```
+
+Looking at the two confusion matrices at the bottom of our output, we see that QDA does a better job. We know that the values along the diagonal are the values that a model predicts correctly, and we see that the QDA model only predicted one value wrong (it predicted an A for a B star). On the other hand, the LDA model made that mistake but also predicted that two stars were M when in fact they were K. So, we see that the QDA model was more accurate and made less mistakes when classifying the stars in our testing dataset, meaning it did a better job. 
+
+
+
+
+## Part three (10 points)
+
+Create a two dimensional grid with around 10,000 points and plot the predicted class for each model (lda and qda). How do the boundary regions differ?
+
+
+```{r}
+mag.vec <- seq(-8, 18, by = 0.28)
+temp.vec <- seq(2000, 30000, by = 275)
+grid.tbl <- expand_grid(magnitude = mag.vec, temp = temp.vec)
+
+pred.lda.tbl <- lda.fit%>%
+  augment(new_data = grid.tbl)
+
+pred.qda.tbl <- qda.fit%>%
+  augment(new_data = grid.tbl)
+
+pred.lda.tbl%>%
+  ggplot(aes(x = magnitude, y = temp, fill = .pred_class))+
+  geom_raster()+
+  labs(title = "LDA MODEL")
+
+pred.qda.tbl%>%
+  ggplot(aes(x = magnitude, y = temp, fill = .pred_class))+
+  geom_raster()+
+  labs(title = "QDA MODEL")
+
+```
+
+We see that for the 
+
+QDA is more flexible, allows us to distinguish a little more
+
+

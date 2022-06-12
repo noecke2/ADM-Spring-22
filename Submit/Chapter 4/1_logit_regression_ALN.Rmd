@@ -1,0 +1,205 @@
+---
+title: "Logistic regression in tidymodels"
+author: "Jaime Davila"
+date: "3/7/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+# Introduction
+
+Let's start by loading an old friend of ours, the `Default` dataset (remember Homework 3?)
+
+```{r}
+library(ISLR2)
+data(Default)
+default.tbl <- tibble(Default)
+```
+
+We are interested in predicting whether a person would go on *default* (that is, would not pay back a loan) given the following information:
+
+* `balance` (How much does the person owe?)
+* `income` (How much does the person earn?)
+* `student` (Is the person a student?)
+
+0. How many observations does this dataset have? How many defaults and non-defaults? How many defaults by student status?
+
+```{r}
+dim(default.tbl)
+table(default.tbl$default)
+table(default.tbl$default, default.tbl$student)
+```
+
+10000 observations, 333 defaults, 9667 non-defaults. Among non-students, 6850 non-defaults and 206 defaults, and among students, 2817 non-defaults and 127 defaults. 
+
+1. Create a boxplot of `balance` across people who default or not. What do you observe? What do you observe when you facet the boxplot by `student`?
+
+```{r}
+default.tbl%>%
+ggplot()+
+  geom_boxplot(aes(x = default, y = balance))
+
+default.tbl%>%
+ggplot()+
+  geom_boxplot(aes(x = default, y = balance))+
+  facet_wrap(~student, nrow = 2)+
+  coord_flip()
+```
+
+People who defaul have higher balances. When we separate by student status, we see the same trend, but that students generally have higher balances regardless of default status. 
+
+
+2. How about the effect of `income` on defaulting? Does it change according to `student` status?
+
+```{r}
+default.tbl%>%
+ggplot()+
+  geom_boxplot(aes(x = default, y = income))
+
+default.tbl%>%
+ggplot()+
+  geom_boxplot(aes(x = default, y = income))+
+  facet_wrap(~student, nrow = 2)+
+  coord_flip()
+```
+
+Not really - we see very little difference in the income between those who default and those who don't default. When we facet by student status, we see that students have much less income, but that the income levels do not change between default status. 
+
+
+3. Load `tidymodels` and create a training dataset using $8000$ observations and a testing dataset using $2000$ observations. Make sure to call your training dataset `default.train.tbl` and your testing dataset `default.test.tbl`
+
+```{r echo=TRUE}
+library(tidymodels)
+set.seed(12345)
+
+default.split <- initial_split(default.tbl, prop = 0.8)
+default.train.tbl <- training(default.split)
+default.test.tbl <- testing(default.split)
+
+
+```
+
+# Modeling probabilities with linear models
+
+Let's start by trying to predict the default using a linear model whose input variable is `balance`, that is 
+
+$$ y = \alpha_0 + \alpha_1 \times balance$$
+In homework 3 we learned that using linear models in this setting creates a number of issues for classification, among them the fact that we are not guaranteed that the prediction will correspond to a probability (a number between `0` and `1`)
+
+One way to overcome this is to use the log odds on our response variable. The log odds $y$ of an event with probability $p$ is defined as
+
+$$\tilde y :=\log \left(\frac{p}{1-p}\right)$$
+
+Hence, if $\tilde y$ represents the log odds, we can invert this expression to get the probability.
+
+$$p=\frac{e^{\tilde y}}{1+e^{\tilde y}}=\frac{1}{1+e^{-\tilde y}}$$
+
+# Logistic regression using `tidymodels`
+
+Fortunately for us, logistic models are readily available in R. We can create such a model on the training dataset using the following code:
+
+```{r echo=TRUE}
+logit.model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+default.recipe <- 
+  recipe(default ~ balance, data=default.train.tbl)
+
+logit.wflow <- workflow() %>%
+  add_recipe(default.recipe) %>%
+  add_model(logit.model) 
+
+logit.fit <- fit(logit.wflow, default.train.tbl)
+```
+
+Finally we can predict the probability of defaulting on the testing dataset or simply predict whether someone would go on default or not
+
+```{r echo=TRUE}
+predict(logit.fit, default.test.tbl, type="prob")
+predict(logit.fit, default.test.tbl)
+```
+
+4. Plot the predicted probability of defaulting (using the logit model) as a function of `balance`.
+
+```{r}
+pred_prob <- predict(logit.fit, default.test.tbl, type="prob")
+
+logit.fit%>%
+  augment(new_data = default.test.tbl)%>%
+  ggplot(aes(x = balance, y = .pred_Yes))+
+    geom_point()
+```
+
+
+5. How many observations are predicted to default in your testing dataset? How many of your predictions are wrong?
+
+```{r}
+predict(logit.fit, default.test.tbl)%>%count(.pred_class)
+
+new.default.tbl <- logit.fit%>%
+  augment(new_data = default.test.tbl)
+
+new.default.tbl%>%
+  count(default)
+
+new.default.tbl%>%
+  count(.pred_class)
+
+sum(new.default.tbl$.pred_class != new.default.tbl$default)
+mean(new.default.tbl$.pred_class != new.default.tbl$default)
+```
+
+Our model predicts 30 defaults, out of a 2000 total. In reality, there were 72 defaults, and our model predicted 52 / 2000 incorrectly, a misclassification rate of around 2.6%. 
+
+
+6. `yardstick` allows you to evaluate the performance of your classification model in many different ways. Consult https://www.tmwr.org/performance.html#binary-classification-metrics and do the following:
+
+a. Calculate the confusion matrix of your model. Is your model making more errors on people that go on default or not?
+
+```{r}
+library(yardstick)
+conf_mat(new.default.tbl, truth = default, estimate = .pred_class)
+```
+
+Making errors on people that do default - it normally predicts that they don't default when they do
+
+
+b. Define `accuracy` and calculate it for your model.
+
+```{r}
+accuracy(new.default.tbl, truth = default, estimate = .pred_class)
+```
+We see an accuracy of 0.974, which means that 97.4 percent of our predictions were correct. 
+
+
+c. Define `specificity`, `sensitivity`, `ROC`, and `AUC`. Plot the ROC curve and calculate the AUC of your model.
+
+```{r}
+roc <- roc_curve(new.default.tbl, default, .pred_Yes)
+autoplot(roc)
+
+roc_auc(new.default.tbl, truth = default, estimate = .pred_Yes)
+```
+
+Specificity: True negative / (True Negative + False Positive) = what % of things were false that we are able to classify correctly
+
+Sensitivity: True positive / (False negative + True positives) - what % of things were true are we able to classify correctly
+
+
+
+
+7. (*Optional*) Calculate the AUC and plot the ROC for the logistic regression model that takes into account `balance`, `income` and `student`.
+
+8. (*Optional*) Plot the decision boundary for the logistic regression model with inputs of balance, income and student.
+
+
+

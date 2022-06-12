@@ -1,0 +1,512 @@
+---
+title: "combined"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(dslabs)
+library(tidymodels)
+library(discrim)
+tidymodels_prefer()
+
+
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+
+```
+
+```{r}
+#approach 1 involving the pixel average
+master.df = data.frame(matrix(nrow = 784,ncol = 2))
+indicator.2 = mnist$train$labels==(2)
+indicator.2 = as_tibble(indicator.2)
+indicator.3 = mnist$train$labels==(3)
+indicator.3 = as_tibble(indicator.3)
+
+for (i in 1:784){
+tib.2 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.2) = "actual.value"
+
+Mean = cbind(indicator.2,tib.2)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[1][i,] = as.numeric(Mean)}
+
+for (i in 1:784){
+tib.3 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.3) = "actual.value"
+
+Mean = cbind(indicator.3,tib.3)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[2][i,] = as.numeric(Mean)}
+
+master.df.1 = master.df%>%
+  mutate(diff = X1 - X2)%>%
+  mutate(pos.ind = ifelse(diff>0,1,0))%>%
+  mutate(RN = row_number())%>%
+  select(diff)
+
+index_23 <- which(mnist$train$labels %in% c(2,3))
+y <- mnist$train$labels[index_23] 
+x <- mnist$train$images[index_23,]
+
+ i = 1
+ iterations = 12089
+ value.vector = vector(length = iterations)
+ for (i in 1:12089){
+ binded = cbind(master.df.1,x[i,])
+ colnames(binded) = c("diff", "value")
+ binded = binded%>%    
+ mutate(product = diff*value)%>%
+   summarize(sum = sum(product))
+ value.vector[i] = as.numeric(binded)
+   
+   }
+ 
+ return.train = tibble(letter = as.factor(y[1:12089]),value.vector)
+ 
+ return.train
+
+index_23 <- which(mnist$test$labels %in% c(2,3))
+y <- mnist$test$labels[index_23] 
+x <- mnist$test$images[index_23,]
+
+ i = 1
+ iterations = 2042
+ value.vector = vector(length = iterations)
+ for (i in 1:2042){
+ binded = cbind(master.df.1,x[i,])
+ colnames(binded) = c("diff", "value")
+ binded = binded%>%    
+ mutate(product = diff*value)%>%
+   summarize(sum = sum(product))
+ value.vector[i] = as.numeric(binded)
+   
+   }
+ 
+ return.test = tibble(letter = as.factor(y[1:2042]),value.vector)
+ 
+ return.test
+```
+
+```{r}
+#approach 2
+#https://rdrr.io/cran/dslabs/src/inst/script/make-mnist_27.R
+
+  #Identifying indices have 2s or 3s
+  index_23_train <- which(mnist$train$labels %in% c(2,3))
+  y.train <- mnist$train$labels[index_23_train] 
+  x.train <- mnist$train$images[index_23_train,]
+  
+  #Placeholder for splitting upper half and lower half
+  row_column <- expand_grid(row = 1:28, col = 1:28)
+  upper_half_idx <- which(row_column$row <= 14)
+  lower_half_idx <- which(row_column$row >14)
+  
+  new_x <- x.train>200
+  
+  new_x <- cbind(rowSums(new_x[,upper_half_idx]) / rowSums(new_x),
+      rowSums(new_x[,lower_half_idx]) / rowSums(new_x))
+ 
+  
+  mnist.23.train <- as_tibble(new_x)%>%
+  mutate(y = y.train,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+    select(y, diff)
+
+#Identifying indices have 2s or 3s
+index_23_test <- which(mnist$test$labels %in% c(2,3))
+y.test <- mnist$test$labels[index_23_test] 
+x.test <- mnist$test$images[index_23_test,]
+
+
+#If x > 200 then ink present, otherwise not
+test_x <- x.test > 200
+
+#Calculating proportion of ink that is in each half for each number
+test_x <- cbind(rowSums(test_x[,upper_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,lower_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,upper_half_idx]),
+      rowSums(test_x[,lower_half_idx]))
+
+
+mnist.23.test <- as_tibble(test_x)%>%
+  mutate(y = y.test,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23_test)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+  select(y, diff)
+
+```
+
+
+```{r}
+#train
+train.data = cbind(return.train,mnist.23.train)
+colnames(train.data) = c("y","x_1","letter.2","x_2")
+
+train.data = train.data%>%
+  select(y, x_1,x_2)
+
+#test
+test.data = cbind(return.test,mnist.23.test)
+colnames(test.data) = c("y","x_1","letter.2","x_2")
+
+test.data = test.data%>%
+  select(y, x_1,x_2)
+
+test.data = as_tibble(test.data)
+train.data = as_tibble(train.data)
+
+set.seed(48493)
+train.data = slice_sample(train.data, n = 800)
+test.data = slice_sample(test.data, n = 200)
+```
+
+```{r}
+#qda
+qda.model <- discrim_quad() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1+x_2, data=train.data)
+
+qda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(qda.model) 
+
+qda.fit <- fit(qda.wflow, train.data)
+
+pred.qda = qda.fit%>%
+  augment(new_data = test.data)
+
+
+accuracy(pred.qda, y,.pred_class)
+conf_mat(pred.qda, y,.pred_class)
+```
+
+```{r}
+#lda
+lda.model <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1 +x_2, data=train.data)
+
+lda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(lda.model) 
+
+lda.fit <- fit(lda.wflow, train.data)
+
+pred.lda = lda.fit%>%
+  augment(new_data = test.data)
+
+
+accuracy(pred.lda, y,.pred_class)
+conf_mat(pred.lda, y,.pred_class)
+```
+
+```{r}
+#logistic regression
+logit.model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+default.recipe <- 
+  recipe(y ~ x_1 + x_2, data=train.data)
+
+logit.wflow <- workflow() %>%
+  add_recipe(default.recipe) %>%
+  add_model(logit.model) 
+
+logit.fit <- fit(logit.wflow, test.data)
+
+pred.logistic = logit.fit%>%
+  augment(new_data = test.data)
+
+
+accuracy(pred.lda, y,.pred_class)
+conf_mat(pred.lda, y,.pred_class)
+```
+
+```{r}
+#qda
+(grid.vec.x = seq(-1750000,1750000, by=10000))
+(grid.vec.y = seq(-1,1, by=.01))
+
+(grid.tbl <- expand_grid(x_1=grid.vec.x, x_2=grid.vec.y))
+
+
+pred.tbl = qda.fit%>%
+  augment(grid.tbl)
+
+pred.tbl%>%
+  ggplot(aes(x = x_1,y=x_2,fill = .pred_class))+
+  geom_raster()
+```
+
+```{r}
+#lda
+(grid.vec.x = seq(-1750000,1750000, by=10000))
+(grid.vec.y = seq(-1,1, by=.01))
+
+(grid.tbl <- expand_grid(x_1=grid.vec.x, x_2=grid.vec.y))
+
+
+pred.tbl = lda.fit%>%
+  augment(grid.tbl)
+
+pred.tbl%>%
+  ggplot(aes(x = x_1,y=x_2,fill = .pred_class))+
+  geom_raster()
+
+ggplot(test.data)+
+  geom_point(aes(x = x_1, y = x_2, color = y))
+```
+
+
+```{r}
+#now try with 5's
+
+#approach 1 involving the pixel average
+master.df = data.frame(matrix(nrow = 784,ncol = 2))
+indicator.2 = mnist$train$labels==(2)
+indicator.2 = as_tibble(indicator.2)
+indicator.3 = mnist$train$labels==(3)
+indicator.3 = as_tibble(indicator.3)
+
+for (i in 1:784){
+tib.2 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.2) = "actual.value"
+
+Mean = cbind(indicator.2,tib.2)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[1][i,] = as.numeric(Mean)}
+
+for (i in 1:784){
+tib.3 = tibble(mnist[1][["train"]][["images"]][,i])
+
+colnames(tib.3) = "actual.value"
+
+Mean = cbind(indicator.3,tib.3)%>%
+  dplyr::filter(value == TRUE)%>%
+  summarize(mean = mean(actual.value))
+
+master.df[2][i,] = as.numeric(Mean)}
+
+master.df.1 = master.df%>%
+  mutate(diff = X1 - X2)%>%
+  mutate(pos.ind = ifelse(diff>0,1,0))%>%
+  mutate(RN = row_number())%>%
+  select(diff)
+
+index_235 <- which(mnist$train$labels %in% c(2,3,5))
+y <- mnist$train$labels[index_235] 
+x <- mnist$train$images[index_235,]
+
+ i = 1
+ iterations = 17510
+ value.vector = vector(length = iterations)
+ for (i in 1:iterations){
+ binded = cbind(master.df.1,x[i,])
+ colnames(binded) = c("diff", "value")
+ binded = binded%>%    
+ mutate(product = diff*value)%>%
+   summarize(sum = sum(product))
+ value.vector[i] = as.numeric(binded)
+   
+   }
+ 
+ return.train = tibble(letter = as.factor(y[1:iterations]),value.vector)
+ 
+ return.train
+
+index_235 <- which(mnist$test$labels %in% c(2,3,5))
+y <- mnist$test$labels[index_235] 
+x <- mnist$test$images[index_235,]
+
+ i = 1
+ iterations = 2934
+ value.vector = vector(length = iterations)
+ for (i in 1:iterations){
+ binded = cbind(master.df.1,x[i,])
+ colnames(binded) = c("diff", "value")
+ binded = binded%>%    
+ mutate(product = diff*value)%>%
+   summarize(sum = sum(product))
+ value.vector[i] = as.numeric(binded)
+   
+   }
+ 
+ return.test = tibble(letter = as.factor(y[1:iterations]),value.vector)
+ 
+ return.test
+
+ggplot(return.test)+
+  geom_boxplot(aes(x = value.vector,y = letter))
+```
+
+
+```{r}
+#approach 2
+#https://rdrr.io/cran/dslabs/src/inst/script/make-mnist_27.R
+
+  #Identifying indices have 2s or 3s
+  index_23_train <- which(mnist$train$labels %in% c(2,3,5))
+  y.train <- mnist$train$labels[index_23_train] 
+  x.train <- mnist$train$images[index_23_train,]
+  
+  #Placeholder for splitting upper half and lower half
+  row_column <- expand_grid(row = 1:28, col = 1:28)
+  upper_half_idx <- which(row_column$row <= 14)
+  lower_half_idx <- which(row_column$row >14)
+  
+  new_x <- x.train>200
+  
+  new_x <- cbind(rowSums(new_x[,upper_half_idx]) / rowSums(new_x),
+      rowSums(new_x[,lower_half_idx]) / rowSums(new_x))
+ 
+  
+  mnist.23.train <- as_tibble(new_x)%>%
+  mutate(y = y.train,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23_train)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+    select(y, diff)
+
+#Identifying indices have 2s or 3s
+index_23_test <- which(mnist$test$labels %in% c(2,3,5))
+y.test <- mnist$test$labels[index_23_test] 
+x.test <- mnist$test$images[index_23_test,]
+
+
+#If x > 200 then ink present, otherwise not
+test_x <- x.test > 200
+
+#Calculating proportion of ink that is in each half for each number
+test_x <- cbind(rowSums(test_x[,upper_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,lower_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,upper_half_idx]),
+      rowSums(test_x[,lower_half_idx]))
+
+
+mnist.23.test <- as_tibble(test_x)%>%
+  mutate(y = y.test,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23_test)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+  select(y, diff)
+
+```
+
+```{r}
+
+#train
+train.data = cbind(return.train,mnist.23.train)
+colnames(train.data) = c("y","x_1","letter.2","x_2")
+
+train.data = train.data%>%
+  select(y, x_1,x_2)
+
+#test
+test.data = cbind(return.test,mnist.23.test)
+colnames(test.data) = c("y","x_1","letter.2","x_2")
+
+test.data = test.data%>%
+  select(y, x_1,x_2)
+
+test.data = as_tibble(test.data)
+train.data = as_tibble(train.data)
+
+set.seed(48493)
+train.data = slice_sample(train.data, n = 800)
+test.data = slice_sample(test.data, n = 200)
+```
+
+
+
+```{r}
+#qda predicting 2,3,5
+#qda
+qda.model <- discrim_quad() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1+x_2, data=train.data)
+
+qda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(qda.model) 
+
+qda.fit <- fit(qda.wflow, train.data)
+
+pred.qda = qda.fit%>%
+  augment(new_data = test.data)
+
+
+accuracy(pred.qda, y,.pred_class)
+conf_mat(pred.qda, y,.pred_class)
+
+pred.tbl.qda5 = qda.fit%>%
+  augment(grid.tbl)
+
+pred.tbl.qda5%>%
+  ggplot(aes(x = x_1,y=x_2,fill = .pred_class))+
+  geom_raster()
+```
+
+```{r}
+
+#lda predicting 2,3,5
+#lda
+lda.model <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1+x_2, data=train.data)
+
+lda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(lda.model) 
+
+lda.fit <- fit(lda.wflow, train.data)
+
+pred.lda = lda.fit%>%
+  augment(new_data = test.data)
+
+
+accuracy(pred.lda, y,.pred_class)
+conf_mat(pred.lda, y,.pred_class)
+
+pred.tbl.lda5 = lda.fit%>%
+  augment(grid.tbl)
+
+pred.tbl.lda5%>%
+  ggplot(aes(x = x_1,y=x_2,fill = .pred_class))+
+  geom_raster()
+```
+
+
+

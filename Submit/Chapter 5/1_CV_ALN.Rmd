@@ -1,0 +1,244 @@
+---
+title: "Cross-Validation"
+author: "Jaime Davila"
+date: "3/14/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+# Introduction
+
+Today we will be reusing our last dataset, that is the `1`, `2`, and `7` dataset.
+
+```{r echo=TRUE}
+digits <- c("1","2","7")
+train.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/train.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+test.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/test.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+```
+
+And let's use a KNN model, but this time we will be using the syntax from `tidymodels` and let's encapsulate our model building using a function `build_knn`
+
+```{r echo=TRUE}
+library(tidymodels)
+library(kknn)
+## devtools::install_github("KlausVigo/kknn")
+tidymodels_prefer()
+
+build_knn <- function (train.tbl, kVal) {
+  knn.model <- nearest_neighbor(neighbors = kVal) %>%
+    set_engine("kknn") %>%
+    set_mode("classification")
+
+  recipe <- recipe(y ~ x_1 + x_2, data=train.tbl)
+
+  knn.wflow <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+  knn.fit <- fit(knn.wflow, train.tbl)
+}
+
+knn.model <- build_knn(train.127.tbl, 5)
+```
+
+We are interested in plotting the boundary of our classifier, so let's create a function that would help us do that:
+
+```{r echo=TRUE}
+plot_boundary <- function(fit, test.tbl, delta){
+  grid.tbl <- expand_grid(x_1=seq(0,1, by=delta), 
+                          x_2=seq(0,1, by=delta)) 
+
+  augment(fit, grid.tbl)%>%
+    ggplot() +
+      geom_raster(aes(x_1, x_2, fill = .pred_class)) +
+      geom_point(data=test.tbl, aes(x=x_1, y=x_2, color=y, shape=y))+
+      scale_color_manual(values=c("blue","red","orange"))
+}
+
+```
+
+And let's put things together and try different values of $k$
+
+```{r echo=TRUE}
+plot_boundary(knn.model, test.127.tbl, 0.01)
+plot_boundary(build_knn(test.127.tbl, 10),
+              test.127.tbl, 0.01)
+plot_boundary(build_knn(test.127.tbl, 50),
+              test.127.tbl, 0.01)
+```
+
+We are interested in finding the best parameter of $k$, but notice to find this parameter we are peeking repeatedly
+at the testing dataset which might result in some overfitting. Is there a better approach that we can use to do that?
+
+# Cross-validation
+
+The answer to our question is to use k-fold cross-validation which allows us to reuse our training dataset without having to look at our testing dataset. More details on how this approach works in https://rafalab.github.io/dsbook/cross-validation.html#k-fold-cross-validation
+
+
+# K-fold validation in `tidymodels`
+
+The details of how $K$-fold cross validation can be implemented in `tidymodels` are available from:
+
+https://emilhvitfeldt.github.io/ISLR-tidymodels-labs/resampling-methods.html#k-fold-cross-validation
+
+These steps can be summarized as follows:
+
+* Create a `parsnip` workflow where the models parameters are **marked** for tuning
+* Create a `vfold_cv` `rsample` object with the cross-validation resamples
+* Create a `tibble` denoting the parameters denoted to be explored
+* Use `tune_grid()` using the 3 objects defined before.
+
+The first step is to create a knn model/workflow, making sure to use the function `tune()` as the `neighbors` option inside the `nearest_neighbor()` function 
+
+```{r echo=TRUE}
+knn.model <- nearest_neighbor(neighbors = tune()) %>%
+    set_engine("kknn") %>%
+    set_mode("classification")
+
+recipe <- recipe(y ~ x_1 + x_2, data=train.127.tbl)
+
+knn.wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+```
+
+1. Look at the documentation of `vfold_cv` and use it to create a 10-fold cross-validation dataset called `digits.folds` using your training dataset. What is the type of `digits.folds`? Display the training/testing dataset with id `Fold02` by using the functions `testing()` and `training()`.
+
+```{r}
+set.seed(12345)
+
+digits.folds <- vfold_cv(train.127.tbl, v = 10)
+
+testing(digits.folds[[1]][[2]])
+
+training(digits.folds[[1]][[2]])
+```
+
+digits.fold is a tibble. 
+
+2. Create a tibble `neigbors.tbl` with a column called `neighbors` with values `1`, `6`, `11`, ..., `51`. Create the same tibble using the function `grid_regular()`.
+
+```{r}
+neighbors.tbl <- tibble(neighbors = seq(1, 51, by = 5))
+neighbors.tbl2 <- grid_regular(neighbors(range = c(1, 51)), levels = 11)
+neighbors.tbl2
+neighbors.tbl
+```
+
+
+
+3. Use the function `tune_grid()` to optimize the neigbors parameter from your knn model. Plot the results of your optimization using `autoplot()`. How do you interpret this plot?
+
+```{r}
+tune.results <- tune_grid(
+  object = knn.wf,
+  resamples = digits.folds, 
+  grid = neighbors.tbl2
+)
+
+autoplot(tune.results)
+```
+
+
+
+We can finalize our model by selecting the best $K$ which maximizes accuracy and fit our model using the training dataset.
+
+```{r echo=TRUE}
+show_best(tune.results, metric = "accuracy")
+best.neighbor <- select_best(tune.results, metric = "accuracy")
+knn.final.wf <- finalize_workflow(knn.wf, best.neighbor)
+knn.final.fit <- fit(knn.final.wf, train.127.tbl)
+```
+
+4. Calculate the confusion matrix of `knn.final.fit` on the testing dataset. Calculate the accuracy of `knn.final.fit` on the testing dataset and compare it to the values you obtained using cross validation. Plot the boundary of the model for the optimal $k$
+
+```{r}
+augment(knn.final.fit, new_data = test.127.tbl)%>%
+conf_mat(truth = y, estimate = .pred_class)
+
+grid.tbl <- expand_grid(x_1=seq(0,1, by=0.01), 
+                          x_2=seq(0,1, by=0.01)) 
+
+augment(knn.final.fit, new_data = grid.tbl)%>%
+  ggplot() +
+    geom_raster(aes(x_1, x_2, fill = .pred_class)) +
+    geom_point(data=test.127.tbl, aes(x=x_1, y=x_2, color=y, shape=y))+
+    scale_color_manual(values=c("blue","red","orange"))
+
+plot_boundary(knn.final.fit, test.127.tbl, 0.01)
+```
+
+
+# Back to the future
+
+Remember the Minneapolis police incident dataset?
+
+```{r}
+mn.police.tbl <- read_csv("~/Mscs 341 S22/Class/Data/police_incidents.mn.csv") 
+```
+
+5. Using the `tidymodels` library construct a KNN model for predicting `tot` as a function of `week`. Remember to create a training/testing dataset with equal number of observations. Find the optimal $k$ in your KNN model by using cross validation and the function `select_by_one_std_err()`. 
+
+```{r}
+#Training/Testing dataset
+set.seed(12345)
+police.split <- initial_split(mn.police.tbl, prop = 0.5)
+police.train <- training(police.split)
+police.test <- testing(police.split)
+
+# Model specification
+knn.model <- nearest_neighbor(neighbors = tune()) %>%
+    set_engine("kknn")%>%
+    set_mode("regression")
+
+recipe <- recipe(tot ~ week, data=police.train)
+
+knn.wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+# Neighbors optimization using CV
+police.folds <- vfold_cv(police.train, v = 10)
+police.grid <- grid_regular(neighbors(range = c(1,51)), levels = 11)
+police.grid
+
+tune.results <- tune_grid(
+  object = knn.wf,
+  resamples = police.folds, 
+  grid = police.grid
+)
+
+autoplot(tune.results)
+
+# Evaluation of model on the testing dataset
+
+show_best(tune.results, metric = "rmse")
+best.neighbor <- select_by_one_std_err(tune.results, neighbors, metric = "rmse")
+knn.final.wf <- finalize_workflow(knn.wf, best.neighbor)
+knn.final.fit <- fit(knn.final.wf, police.train)
+
+select_by_one_std_err(tune.results, neighbors, metric = "rmse")
+
+augment(knn.final.fit, police.test)%>%
+  rmse(truth = tot, estimate = .pred)
+
+
+
+```
+
+
+
+
+
+
+

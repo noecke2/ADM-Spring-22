@@ -1,0 +1,261 @@
+---
+title: "Data types in R"
+author: "Jaime Davila"
+date: "1/31/22"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,cache = TRUE)
+library(tidyverse)
+```
+
+
+# Introduction
+
+The following worksheet follows closely the content from [chapter 20 of R for data Science](https://r4ds.had.co.nz/vectors.html)
+
+##  Vectors
+
+One of the most basic types in R is a vector which is basically an ordered collection of elements. We can define a vector in R by using the function `c()` and we can access the different elements of a vector by using `[]`. For example: 
+
+```{r}
+(dec.numbers <- c(1.1,2.2,3.3,4.4,5.5))
+dec.numbers[1]
+dec.numbers[5]
+dec.numbers[2]
+```
+
+Two key things we can do we vectors is calculate their number of  elements  by using `length`, and determine the type of a vector by using `typeof`:
+
+```{r}
+length(dec.numbers)
+typeof(dec.numbers)
+```
+
+The different types of vectors can be summarized in the following figure from 
+[R for data science](https://r4ds.had.co.nz/vectors.html). We will explore it in detail in the next couple of sections.
+
+![Types of vectors (R for data science ch 20).](data-structures-overview.png)
+
+## Atomic data types
+
+Let's start by creating some vectors using our favorite characters from "Encanto"
+
+```{r}
+(madrigal.names <- c("Alma","Mirabel","Bruno","Luisa","Antonio"))
+(madrigal.ages <- c(75, 15,50,19,5))
+(madrigal.heights <- c(5.5, 5.2,5.4,6.5,3.10))
+(madrigal.haspower <- c(FALSE,FALSE,TRUE,TRUE,TRUE))
+```
+
+### Numbers
+
+Notice that in R the default numeric type is `double`. Notice how the type of of `madrigal.ages` is the same as for `madrigal.heights` (double)
+
+```{r}
+typeof(madrigal.ages)
+typeof(madrigal.heights)
+```
+
+If you want to force R to considers the ages as integers you can use the letter L after the number as follows
+
+```{r}
+(madrigal.ages <- c(75L,15L,50L,19L,5L))
+typeof(madrigal.ages)
+```
+
+### Booleans
+
+Booleans are either TRUE or FALSE (or NA). Notice how R can compare vectors of numbers using a expression (for example `>=`) and the result is a vector of booleans.
+
+```{r}
+(madrigal.adult <- (madrigal.ages>=18))
+```
+
+### Characters
+
+Each element of a character vector is a string. Notice how strings are represented using the quotes (""). They can be as short as the empty string or as long as you want them to be:
+
+```{r}
+two.words = c("","Incomprehensibilities")
+typeof(two.words)
+```
+
+### Common operations in vectors
+
+#### Coercion
+
+In R we can convert between different types by using the functions with the prefix `as.`. 
+
+1. Experiment using `as.logical`, `as.integer`, `as.double`, and `as.character` using the 4 vectors of attributes from the Madrigal family.
+
+```{r}
+
+as.character(madrigal.ages)
+as.logical(madrigal.heights)
+as.double(madrigal.names)
+as.double(madrigal.haspower)
+as.character(madrigal.haspower)
+
+```
+
+#### Subsetting
+
+The basic function for subsetting vectors is `[]`. Notice how you can use it in a number of different ways:
+
+```{r message=FALSE}
+madrigal.names[1]
+madrigal.names[c(1,4)]
+madrigal.names[madrigal.ages>=18]
+```
+
+2. From our collection of Madrigal family members what are the names of the ones that have powers? What's the age of the Madrigal family members who are over 6ft?
+
+```{r}
+
+madrigal.names[madrigal.haspower]
+madrigal.names[madrigal.heights>6]
+
+```
+
+### Lists
+
+List are data types that allow you to store different types in a single structure  Let's start with a simple example.
+
+```{r}
+(mirabel.lst = list(name="Mirabel", age=15L, height=5.2, haspowers=FALSE,
+                     songs=c("The Family Madrigal", "Waiting on a Miracle")))
+```
+
+Notice we can access each element of the list by using the dollar sign and the name of each field.
+
+```{r}
+mirabel.lst$name
+mirabel.lst$age
+```
+
+3. Explore the use of `[[]]` using `mirabel.lst`. Using `[[]]` extract the height and age of Mirabel. Also extract the second song that she sings in the movie.
+
+```{r}
+mirabel.lst[["age"]]
+mirabel.lst[["height"]]
+mirabel.lst[["songs"]][2]
+mirabel.lst$songs[2]
+```
+
+### Augmented vectors
+
+#### Tables (tibbles)
+
+One of the most important data types in R is the data frame/tibble which is used to store tables. Let's make a data frame, a tibble, and a list out of our information 
+
+```{r}
+madrigal.df <- data.frame(name = madrigal.names,
+                      age = madrigal.ages,
+                      height = madrigal.heights,
+                      has.power = madrigal.haspower)
+madrigal.df
+
+madrigal.tbl <- tibble(name = madrigal.names,
+                      age = madrigal.ages,
+                      height = madrigal.heights,
+                      has.power = madrigal.haspower)
+madrigal.tbl
+
+madrigal.lst <- list (name = madrigal.names,
+                      age = madrigal.ages,
+                      height = madrigal.heights,
+                      has.power = madrigal.haspower )
+madrigal.lst
+```
+
+4. We can access a column of a tibble in data frame by using the `$` sign. Obtain detailed information from column `height` from `madrigal.tbl` and `madrigal.df`.
+
+```{r}
+madrigal.df$height
+madrigal.tbl$height
+```
+
+5. We can explore the structure of a variable by using the command `str`. Use `str` to find any differences between `madrigal.lst` and `madrigal.tbl`? Use this information to describe how tibbles are constructed using lists.
+
+```{r}
+
+str(madrigal.lst)
+str(madrigal.tbl)
+#The tibble is a list of vectors that are all the same length
+```
+
+6. What happens if you try to create a `data.frame` or a `tibble` with two columns of different sizes?  
+
+```{r}
+
+tbl_test <- tibble(a = c(1,2), b = c(3, 2, 1,0))
+
+```
+
+
+#### Factors
+
+Factors are a very useful data type for representing categorical data in R. Let's represent the generation of the family member using a factor with 3 levels, "first", "second", and "third"
+
+```{r}
+madrigal.levels <- c("first","second","third")
+madrigal.generation <- factor (c("first","third","second","third","third"),
+                               levels=madrigal.levels)
+madrigal.generation
+str(madrigal.generation)
+typeof(madrigal.generation)
+levels(madrigal.generation)
+```
+
+Behind the scenes, R stores each level as a integer (that's why the type is an integer) and the command `levels` shows the order of each of these categories. Notice how the order of such categories is important and on occasion is used to force a particular order when doing plots.
+
+7. Notice that factors can be a source of frustration since on occasion they can look like strings when they are used in a data frame. Determine the type of the field `name` in `madrigal.df` and `madrigal.tbl`.
+
+```{r}
+str(madrigal.df$name) #FACTOR
+str(madrigal.tbl$name) #CHARACTER
+```
+
+#### Matrices
+
+Matrices are extensions of vectors that have dimensions (number of rows and number of columns). Let's create a matrix  where the columns represent the characters of the movie and the rows are the songs. To do that we will use the commands:
+
+   * `rbind` (row bind): To bind the vector rows
+   * `rownames`: To give names to the rows which are the movie songs 
+   * `colnames`: To give names to the columns which are the movie characters
+
+```{r}
+songs.mat <- rbind (c(1,0),
+                    c(1,0),
+                    c(0,1))
+rownames(songs.mat) <- c("The Family Madrigal",
+                        "Waiting for a miracle",
+                        "Surface Pressure")
+colnames(songs.mat) <- c("Mirabel","Luisa")
+
+dim(songs.mat)
+songs.mat
+```
+
+
+8. In order to access the contents of a matrix we can use `[]`. What do the following commands do? How do you get the elements of the second column of this matrix? Can you create a submatrix with the first and third rows?
+
+```{r}
+songs.mat[1] #First entry
+songs.mat[1,2] #First row, second column entry (0)
+songs.mat[1,] #Entire First row
+songs.mat[,1] #Entire first column
+
+songs.mat[,2] #Entire Second Column
+songs.mat[c(1,3),] #Submatrix with 1st and 3rd rows
+```
+
+
+
+

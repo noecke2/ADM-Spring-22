@@ -1,0 +1,201 @@
+---
+title: "Classification-2"
+author: "Andrew Noecker"
+date: "2/23/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(caret)
+library(dslabs)
+```
+
+# Is it a 2 or 7? - continuation
+
+Last time we started considering the problem of labeling digits as `2` or a `7` using the following variables (features):
+
+* `x_1` will be the proportion of dark pixels in the upper left quadrant.
+* `x_2` will be the proportion of dark pixels in the lower right quadrant.
+
+Let's start by loading the dataset `mnist_27` from `dslabs` and creating our testing and training datasets:
+
+```{r echo=TRUE}
+data("mnist_27")
+mnist.train.tbl <- tibble(mnist_27$train)
+mnist.test.tbl <- tibble(mnist_27$test)
+```
+
+
+```{r}
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+```
+
+```{r}
+str(mnist)
+mnist$train$labels[mnist$train$labels == 2 | mnist$train$labels == 3]
+
+mnist.train <- mnist$train
+str(mnist.train)
+
+mnist.train$labels[mnist.train[[2]] == 2 | mnist.train[[2]] == 3]
+
+str(mnist.train$images)
+
+
+```
+
+
+```{r}
+#https://rdrr.io/cran/dslabs/src/inst/script/make-mnist_27.R
+
+  #Identifying indices have 2s or 3s
+  index_23_train <- which(mnist$train$labels %in% c(2,3))
+  y.train <- mnist$train$labels[index_23_train] 
+  x.train <- mnist$train$images[index_23_train,]
+  
+  #Placeholder for splitting upper half and lower half
+  row_column <- expand_grid(row = 1:28, col = 1:28)
+  upper_half_idx <- which(row_column$row <= 14)
+  lower_half_idx <- which(row_column$row >14)
+  
+  new_x <- x.train>200
+  
+  new_x <- cbind(rowSums(new_x[,upper_half_idx]) / rowSums(new_x),
+      rowSums(new_x[,lower_half_idx]) / rowSums(new_x))
+ 
+  
+  mnist_23.train <- as_tibble(new_x)%>%
+  mutate(y = y.train,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+    select(y, diff)
+
+#Identifying indices have 2s or 3s
+index_23_test <- which(mnist$test$labels %in% c(2,3))
+y.test <- mnist$test$labels[index_23_test] 
+x.test <- mnist$test$images[index_23_test,]
+
+
+#If x > 200 then ink present, otherwise not
+test_x <- x.test > 200
+
+#Calculating proportion of ink that is in each half for each number
+test_x <- cbind(rowSums(test_x[,upper_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,lower_half_idx]) / rowSums(test_x),
+      rowSums(test_x[,upper_half_idx]),
+      rowSums(test_x[,lower_half_idx]))
+
+
+mnist.23.test <- as_tibble(test_x)%>%
+  mutate(y = y.test,
+         diff = V1 - V2,
+         abs_diff = abs(diff),
+         index = index_23_test)%>%
+  rename(top_prop = "V1",
+         bottom_prop = "V2")%>%
+  select(y, diff)
+
+```
+
+As we can wee `mnist` has a training and testing set. The training dataset has 60,000 elements represented as a matrix of $6000 \times 784$ (every image is a vector of 784, representing a $28 \times 28$ image). It also has the labels corresponding to each of the images represented as integers. Finally the testing dataset has 10,000 elements represented in a similar way. Before we interact with this dataset, let's define a handy function that will allows us to plot any digit:
+
+```{r}
+plotImage <- function(dat,size=28){
+  imag <- matrix(dat,nrow=size)[,28:1]
+  image(imag,col=grey.colors(256), xlab = "", ylab="") 
+}
+```
+
+So now let's explore a couple of elements from our training and testing datasets
+
+```{r}
+plotImage(mnist$train$images[46002,])
+mnist$train$labels[6]
+
+plotImage(mnist$train$images[12813,])
+mnist$train$labels[8]
+
+plotImage(mnist$train$images[28859,])
+mnist$train$labels[50]
+
+```
+
+And let's note the dimensions of those datasets
+
+```{r echo=TRUE}
+dim(mnist.train.tbl)
+dim(mnist.test.tbl)
+```
+
+Today we are interested in defining the *decision boundary* of the best theoretical classifier which we will call the *Bayes' boundary*. The `mnist` dataset has over 60,000 digits so we can approximate the theoretical probability of a 7 (compared to a 2). Luckily for us this information is contained in the field `true_p` of `mnist_27`. Let's take a look at it:
+
+```{r echo=TRUE}
+mnist.true.tbl <-  tibble(mnist_27$true_p)
+```
+
+The way to interpret this table is to note that given `x_1` and `x_2` it provides an estimate of the probability of a digit been a `7`. Let's plot how this probability looks like in two similar ways
+
+```{r echo=TRUE}
+ggplot(mnist.true.tbl, aes(x_1, x_2, fill = p)) +
+  geom_raster() +
+  scale_fill_viridis_c()
+```
+
+```{r echo=TRUE}
+ggplot(mnist.true.tbl, aes(x_1, x_2, fill = p)) +
+  geom_raster() +
+  scale_fill_viridis_b()
+```
+
+Notice how points on the far right are likely to be `7`, and how points in the left are very likely to be `2`. Finally notice the probability changes around a curved region in the left of the screen.
+
+The Bayes' boundary consists of all the points where the probability is exactly equal to 0.5. We can plot this boundary by using the `stat_contour` command of `ggplot`. Notice that for `stat_contour` to work you need to define `z` in your `aes` command:
+
+```{r echo=FALSE}
+ggplot(mnist.true.tbl, aes(x_1, x_2, z=p,fill = p)) +
+  geom_raster() +
+  stat_contour(breaks=c(0.5), color="black")+
+  scale_fill_viridis_b()
+```
+
+
+6. Create a linear model (similar to point 4) that predicts `default` based on `balance` and `income`. What is the missclassification rate?
+
+```{r}
+
+#Assigning 0 and 1 to default variable
+default.train.tbl <- default.train.tbl%>%
+  mutate(isDefault = ifelse(default == "Yes", 1, 0))
+
+#Modeling and Predicting
+default.lm <- lm(isDefault ~ balance + income, data = default.train.tbl)
+summary(default.lm)
+
+prob1 <- predict(default.lm, default.test.tbl)
+
+#Multiply by 1/max(probDef) --> ensures max value is now 1
+
+default.test.tbl <- default.test.tbl%>%
+  mutate(probDef = prob1,
+         probDef = ifelse(probDef < 0, 0, probDef),
+         probDef = ifelse(probDef > 1, 1, probDef),
+         probDef_adj = probDef * (1/max(probDef)),
+         predDef = ifelse(probDef_adj >=0.5, "Yes", "No"))
+
+
+#Misclassification Rate
+
+mean(default.test.tbl$predDef != default.test.tbl$default)
+```
+
+After adjusting our probabilities so that the maximum probability is calibrated as '1', we have a missclassification rate of 0.062. 
+

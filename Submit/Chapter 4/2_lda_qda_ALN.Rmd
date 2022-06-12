@@ -1,0 +1,208 @@
+---
+title: "Generative models"
+author: "Jaime Davila"
+date: "3/09/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+```
+
+# Introduction
+
+Our example of today is a variation of the `mnist_27` dataset, however this time we will add `1` to the mix. If you are interested in how this dataset was generated please read
+https://rafalab.github.io/dsbook/examples-of-algorithms.html#case-study-more-than-three-classes
+
+Let's start by loading our testing and training datasets
+
+```{r echo=TRUE}
+digits <- c("1","2","7")
+train.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/train.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+test.127.tbl <- read_csv("~/Mscs 341 S22/Class/Data/test.127.csv") %>%
+  mutate(y=factor(y, levels=digits))
+```
+
+And let's take a quick look at our training dataset
+
+```{r echo=TRUE}
+ggplot(train.127.tbl, aes(x_1, x_2, color=y))+
+  geom_point()
+```
+
+As you can see the problem that we are trying to solve is a classification problem where we have 3 potential values. The main idea of how to solve this particular problem is that we would need to calculate the probability of an observation been a `1`, the probability of been a `2` and the probability of being a `7` (notice this last probability is just 1 minus the other two values). Finally if we have to pick a label, we choose the one that maximizes the probability
+
+
+# Linear Discriminant Analysis
+
+Suppose that we take the first coordinate ($x$) of an observation from  our plot and we want to know  the probability that such point is a `2`. We can write that using mathematical notation as:
+
+$$P(Y=2|X=x)$$
+Using Bayes' theorem we know that: 
+
+$$P(Y=2|X=x)) = \frac{P(X=x|Y=2)P(Y=2)}{P(X=x)}$$ 
+
+Linear Discriminant Analysis works by assuming that the probability of having coordinate $x$ for each digit follows a normal distribution and that the standard deviation of such distribution is the same for each our three digits (notice that the mean for 1 is a small value, the mean for 2 is in the middle and the mean for 7 is above 0.3). In other words,
+
+$$P(X=x|Y=k)=\frac{1}{\sqrt{2\pi}\sigma} e^{-x-\mu_k^2/(2\sigma^2)}$$
+Notice that for this equation we need to calculate $\mu_1, \mu_2, \mu_7$ and $sigma$. Using algebra we get that:
+
+* $\mu_k$ is just the mean of $x$ in each class $k$. $k=1,2,7$.
+
+* $\sigma^2 =\frac{1}{N-3}\sum_{k=1}^3\sum_{y_i=k} (x_i - \mu_k)^2$, where $\sigma_k^2$ is the variance of $x$ in class $k$.
+
+
+# LDA in `tidymodels`
+
+Let's start by setting up our LDA model using `tidymodels`. Notice that at this point we are only using feature $x_1$ to predict what type of digit we have
+
+```{r echo=TRUE}
+library(tidymodels)
+library(discrim)
+tidymodels_prefer()
+
+#install.packages("devtools")
+#library(devtools)
+#devtools::install_github("tidymodels/discrim")
+
+lda.model <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1, data=train.127.tbl)
+
+lda.wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(lda.model) 
+
+lda.fit <- fit(lda.wflow, train.127.tbl)
+```
+
+1. Use the command `augment` to add prediction information on your testing dataset. How many additional columns do you have? Plot the probabilities of being a `1`, `2` or `7` as function of `x_1`. Using the graph, what is the approximate intervals where observations are predicted to be `2`s? How about `7`?
+
+```{r}
+pred.tbl <- lda.fit%>%
+  augment(new_data = test.127.tbl)
+
+pred.tbl%>%
+  pivot_longer(c(5:7))%>%
+  ggplot(aes(x = x_1, y = value, color = name))+
+    geom_line()
+
+
+```
+When x_1 is in interval[0,.1], it'll predict a 1, when x_1 is in the interval ~(0.1,0.18), it'll predict a 2, and anything greater than 0.18 it'll predict a 7
+
+
+2. Calculate the accuracy of your method. Create the confusion matrix of this model using our testing dataset. What two pairs of digits are getting confused the most?
+
+```{r}
+accuracy(pred.tbl, truth = y, estimate = .pred_class)
+conf_mat(pred.tbl, truth = y, estimate = .pred_class)
+```
+
+The accuracy of our model is 61.2%. The most common error is that we're predicting a 1 for a 2. We also mistake 2s and 7s a decent amount, in both directions (predicting 2s for 7s and 7s for 2s). 
+
+3. Create an lda model that uses both $x_1$ and $x_2$ as input variables and calculate the accuracy of your method. Is this an improvement over 1)? Create the confusion matrix using our dataset and check what pairs of digits are getting missclassified the most. 
+
+```{r}
+### Remaking the model
+lda.model <- discrim_linear()%>%
+  set_engine("MASS")%>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1 + x_2, data = train.127.tbl)
+
+lda.wflow <- workflow()%>%
+  add_recipe(recipe)%>%
+  add_model(lda.model)
+
+lda.fit <- fit(lda.wflow, train.127.tbl)
+
+pred.tbl <- lda.fit%>%
+  augment(new_data = test.127.tbl)
+
+accuracy(pred.tbl, y, .pred_class)
+conf_mat(pred.tbl, y, .pred_class)
+
+```
+
+We see accuracy of 62.9%, which is a slight improvement, but not drastic. 2s are definitely still missclassified the most, but slightly more are classified right. 
+
+
+
+4. Create a grid with values in the unit square and plot the predicted class (using color) for each point in this grid. 
+
+
+```{r}
+vec1 <- seq(0, 1, by = 0.01)
+
+grid.tbl <- expand_grid(x_1 = vec1, x_2 = vec1)
+
+pred.tbl <- lda.fit%>%
+  augment(new_data = grid.tbl)
+
+pred.tbl%>%
+  ggplot(aes(x = x_1, y = x_2, fill = .pred_class))+
+  geom_raster()
+
+```
+
+
+
+
+# Quadratic discriminant analysis (QDA)
+
+QDA uses similar ideas as LDA but the key distinction is that it *does not assume* an equal standard deviation structure across all the classes (see https://rafalab.github.io/dsbook/examples-of-algorithms.html#quadratic-discriminant-analysis for more details). QDA is readily available in `tidymodels`, just make sure in your model definition you use the function  `discrim_quad()` instead of `discrim_linear()`
+
+5. Calculate the confusion matrix and accuracy of QDA on the 3 digit problem using your testing dataset. Is the accuracy better when compared to LDA? Why do you think that is the case?
+
+```{r}
+qda.model <- discrim_quad()%>%
+  set_engine("MASS")%>%
+  set_mode("classification")
+
+recipe <- recipe(y ~ x_1 + x_2, data = train.127.tbl)
+
+qda.wflow <- workflow()%>%
+  add_recipe(recipe)%>%
+  add_model(qda.model)
+
+qda.fit <- fit(qda.wflow, train.127.tbl)
+
+pred.tbl <- qda.fit%>%
+  augment(new_data = test.127.tbl)
+
+accuracy(pred.tbl, y, .pred_class)
+conf_mat(pred.tbl, y, .pred_class)
+```
+
+The accuracy goes up to 74.9%, which is a significant improvement. 
+
+
+
+6. Create a grid with values in the unit square and plot the predicted class (using color) for the QDA model in each point in this grid. How does this compare to 4?
+
+```{r}
+grid.tbl <- expand_grid(x_1 = seq(0, 1, 0.01), x_2 = seq(0,1, 0.01))
+
+pred.tbl <- qda.fit%>%
+  augment(new_data = grid.tbl)
+
+pred.tbl%>%
+  ggplot(aes(x = x_1, y = x_2, fill = .pred_class))+
+  geom_raster()
+
+
+```
+
+
+# No homework for next week, but remember your challenge is due next Thursday 3/17!
+
+

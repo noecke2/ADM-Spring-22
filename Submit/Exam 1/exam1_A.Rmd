@@ -1,0 +1,334 @@
+---
+title: "Algorithms for Decision Making: Exam 1"
+author: "Jaime Davila"
+date: "3/24/22"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+\newcommand{\pledgeline}{
+\setlength{\unitlength}{1in}
+\begin{picture}(6, .125)
+\put(0,0){\line(1,0){4}}
+\end{picture}
+}
+
+\newcommand{\ret}{
+\vspace{1cm} }
+\newcommand{\reta}{
+\vspace{.5cm} }
+\newcommand{\retb}{
+\vspace{2.5cm} }
+\newcommand{\retc}{
+\vspace{3.2cm} 
+}
+
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(dslabs)
+library(discrim)
+tidymodels_prefer()
+```
+
+### Exam 1 Guidelines
+
+- You have the entire class time (80 minutes) to complete this exam.  
+
+- Please make sure to save **immediately** your work in your submit folder. By the end of class time save the last version of your work and **don't** modify it afterwards.
+
+- You are to work completely independently on the exam. 
+
+- You are allowed to use your class notes, moodle, worksheets, homeworks, textbooks, plus the "Help" feature from Rstudio.
+
+- You **are not** permitted to do web searches.
+
+- Please silence your cell phone.  Place it and any other connected devices in your bag and do not access them for any reason.
+
+For questions that ask for interpretations and explanations, usually no more than a sentence or two is needed for justification.  Be thorough, but do not “brain dump”.  Notice that three sections of this exam are independent and that you can complete later sections successfully whether or not earlier sections are correct. 
+
+Do not spend too long on any one question. If you are not sure about an answer, write a note detailing your concern.
+
+
+**PLEDGE:**  I pledge on my honor that I have neither received nor given assistance during this exam nor have I witnessed others receiving assistance, and I have followed the guidelines as described above.  
+
+\vspace{3mm}
+
+**SIGNATURE:** \pledgeline
+
+$\bigcirc$ I have intentionally not signed the pledge.
+
+\vspace{3mm}
+
+# The Weather in Minnesota (40 points)
+
+It is spring in Minnesota and we are interested on predicting what month of the year we are living based on the outside temperature. To do that let's load our testing and training datasets
+
+```{r echo=TRUE}
+month.levels <-  c("Jan","Feb","Mar")
+temp.train.tbl <- read_csv("~/Mscs 341 S22/Class/Data/mn_weather.train.csv") %>%
+  mutate(month=factor(month, month.levels))
+temp.test.tbl <- read_csv("~/Mscs 341 S22/Class/Data/mn_weather.test.csv") %>%
+  mutate(month=factor(month, month.levels))
+```
+
+## Question 1 (15 points)
+
+Do a boxplot using `temp.train.tbl` with the distribution of the temperature across the first 3 months of the year. Calculate the mean and standard deviation of the temperature for each of the 3 months. Based on this information, which method would you choose between `lda` and `qda` to predict the month based on the temperature? Justify your answer.
+
+```{r}
+temp.train.tbl%>%
+  ggplot(aes(x = month, y = temp))+
+    geom_boxplot()
+
+temp.train.tbl%>%
+  group_by(month)%>%
+  summarize(mean_temp = mean(temp),
+            sd_temp = sd(temp))
+```
+
+Based on the SD of the temperatures, I would use a QDA model to predict the month based on temperature. One of the assumptions we make when using LDA is that the standard deviations across groups are roughly equal, but here we see that the standard deviation of January is more than double that of March and roughly double that of February. QDA provides with more flexibility to predict the month and does not assume that standard deviations are equal across groups, so it provides a better fit than LDA here.  
+
+
+
+## Question 2 (15 points)
+
+Using `tidymodels()` create the model you chose in `Question 1` (either `lda` or `qda`) for predicting the month based on the temperature. Using your testing dataset, plot the predicted probability of a temperature corresponding to January, February or March in a single graph. How do you interpret this plot and what are the classification boundaries for each month? Using the information from this plot on which month will your model be making more mistakes?
+
+
+```{r}
+qda.model <- discrim_quad()%>%
+  set_engine("MASS")%>%
+  set_mode("classification")
+
+recipe <- recipe(month ~ temp, data = temp.train.tbl)
+
+qda.wflow <- workflow()%>%
+  add_recipe(recipe)%>%
+  add_model(qda.model)
+
+qda.fit <- fit(qda.wflow, temp.train.tbl)
+
+pred.qda.tbl <- qda.fit%>%
+  augment(new_data = temp.test.tbl)
+
+pred.qda.tbl%>%
+  pivot_longer(4:6)%>%
+  ggplot(aes(x = temp, y = value, color = name))+
+           geom_line()
+```
+
+From the line plot above, we can identiy which month will be predicted at a given temp value. This can be done by looking at a certain temp value and examining which color line is highest. This is the month that will be predicted for that temp value. We see that from 0 to ~23 degrees we will predict January, from ~23 to 31 we will predict February, and from 31 to 40 we will predict March. These are our classification boundaries.  Based on this it seems like our model will make the most mistakes on February, because when it predicts February the value (predicted probability) is only ~50%, so there are plenty of occasions where it will guess February because it's in that 23-31 range but in reality March and January have plenty of those days as well. 
+
+
+
+## Question 3 (10 points)
+
+Calculate the sensitivity and specificity of your model and interpret them in the context of your problem. Based on the confusion matrix, on which month does your model make more mistakes?
+
+```{r}
+#Sensitivity = (Number of Yes predicted as Yes) / (Total number of Yes)  
+#Specificity = (Number of No predicted as No) / (Total number of No)
+conf_mat(pred.qda.tbl, month, .pred_class)
+
+(177+134+263) / (177+90+61+57+134+110+43+263) #Sensitivity
+
+
+sens(pred.qda.tbl, month, .pred_class)
+yardstick::spec(pred.qda.tbl, month, .pred_class)
+
+```
+
+Using the confusion matrix, we see that what we predicted in question 2 was right - the most mistakes are made on February. There we see only 44% of February days are correctly predicted, in comparison to 86% correct in March and 54% in January. 
+
+We see the sensitivity is right around 61.4%, while the specificity is at around 80.8%. This means that we're predicting around 61.4% of months correctly, and that we're getting about 80.8% of 'no's correct. 
+
+
+# Wrangling with Terminator 2 (20 points)
+
+`Movielens` is a dataset containing user provided feedback from different movies. You can find more information about this dataset using `?movielens`. We can load this dataset by doing:
+
+```{r echo=TRUE}
+data(movielens)
+movielens.tbl <- tibble(movielens)
+```
+
+We are interested in creating a simple recommendation system for the classic 90s movie and one of Prof. Davila's favorites, "Terminator 2: Judgment Day"
+
+## Step one (5 points)
+
+What are the movieId and genres corresponding to "Terminator 2: Judgment Day"? Do a histogram of the user ratings for this movie.
+
+```{r}
+movielens.tbl%>%
+  filter(title == "Terminator 2: Judgment Day")%>%
+  ggplot(aes(x = rating))+
+  geom_histogram(bins= 8)
+```
+
+The movieId is 589, and the genres are Action/Sci-Fi, which makes sense for a Terminator movie. 
+
+
+
+## Step two (5 points)
+
+Create a table with the average movie ratings for each user. Also, create a table with the average rating for movies with genre "Action|Sci-Fi" for each user.
+
+```{r}
+userId.rating<- movielens.tbl%>%
+  group_by(userId)%>%
+  summarize(rating.all = mean(rating))
+
+userId.rating
+
+userId.rating.scifi <- movielens.tbl%>%
+  filter(genres == "Action|Sci-Fi")%>%
+  group_by(userId)%>%
+  summarize(rating.scifi = mean(rating))
+
+userId.rating.scifi
+```
+
+
+
+
+## Step three (10 points)
+
+Create a table `terminator2.movie.tbl` with columns:
+
+* `userId`
+* The average rating of all movies for that `userId`.
+* The average rating of all movies in the "Action|Sci-Fi" for that userId.
+* The rating that user gave to Terminator 2
+
+Make sure to remove rows that have "NA" in either of those columns
+
+```{r}
+user.terminator <- movielens.tbl%>%
+  filter(title == "Terminator 2: Judgment Day")
+
+terminator2.movie.tbl <- userId.rating%>%
+  inner_join(userId.rating.scifi, by = "userId")%>%
+  inner_join(user.terminator, by = "userId")%>%
+  select(1,2,3,8)%>%
+  rename(rating.terminator = "rating")
+#Using inner joins ensures no NAs
+```
+
+
+
+
+# Rating Terminator 2 (40 points)
+
+Make sure that the tibble you obtained from the previous point has 237 observations and 4 variables. In case you ran into problems you can use the following code:
+
+```{r echo=TRUE}
+terminator2.movie.tbl <- read_csv("~/Mscs 341 S22/Class/Data/movies.csv")
+dim(terminator2.movie.tbl)
+```
+
+Let's create our testing and testing dataset
+
+```{r echo=TRUE}
+set.seed(123456)
+terminator2.split <- initial_split(terminator2.movie.tbl)
+terminator2.train.tbl <- training(terminator2.split)
+terminator2.test.tbl <- testing(terminator2.split)
+```
+
+## Linear models (20 points)
+
+Using `tidymodels()` create a linear model to predict the rating of Terminator 2 based on `avg.rating` and `avg.action.scifi`. How do you interpret the coefficients of your linear model? What is your `rmse` and $R^2$ in your testing dataset?
+
+```{r}
+lm.model <- linear_reg() %>%
+  set_engine("lm")
+
+lm.wflow <- workflow() %>%
+  add_model(lm.model) %>%
+  add_formula(rating ~ avg.rating+avg.action.scifi)
+
+lm.fit <- fit(lm.wflow, terminator2.train.tbl)
+
+extract_fit_engine(lm.fit)%>%
+  tidy()
+
+
+
+pred.test <- augment(lm.fit, terminator2.test.tbl)
+
+pred.test%>%rsq(truth = rating, estimate = .pred)
+pred.test%>%rmse(rating, .pred)
+
+
+```
+
+Starting with the rmse and $R^2$, we see that the when we run our model on the testing set we get an $R^2$ of 0.536 and an rmse of 0.57. Neither of these are terrible, but they aren't great either. 
+
+Looking at the output from tidy(), we can examine the coefficients. The intercept says that if a user had an average overall rating of 0 and an overall action/scifi rating of 0, then we'd expect them to give Terminatory a 1.81. The avg.rating coefficient of -0.241 suggests that if all else remained constant and a users  overall rating increased by 1, we'd actually expect them to give Terminator 2 a rating that was .241 lower. Similarly, for avg.action.scifi, if all else remained constant and we saw a one point increase in a users action/scifi rating, we'd expect their terminator 2 rating to be 0.823 points higher. 
+
+
+
+## KNN models (20 points)
+
+Using `tidymodels()` create a KNN model to predict the rating of Terminator 2 based on `avg.rating` and `avg.action.scifi`. Create a 10-fold cross-validation set and use it to find the optimal `neigbors` by minimizing the `rmse`. Describe in your own words how to construct the 5th training and testing dataset from your cross-validation set. Calculate the `rmse` and $R^2$ of your model in your testing dataset and compare it with the linear model from the previous point.
+
+```{r echo=TRUE}
+set.seed(654321)
+knn.model <- nearest_neighbor(neighbors = tune()) %>%
+    set_engine("kknn")%>%
+    set_mode("regression")
+
+recipe <- recipe(rating ~ avg.rating + avg.action.scifi, data=terminator2.train.tbl)
+
+knn.wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+# Neighbors optimization using CV
+recipe.folds <- vfold_cv(terminator2.train.tbl, v = 10)
+recipe.grid<- grid_regular(neighbors(range = c(5, 50)), levels = 10)#UNSURE HOW MANY LEVELS WE SHOULD USE SO WENT WITH 10
+recipe.grid
+
+tune.results <- tune_grid(
+  object = knn.wf,
+  resamples = recipe.folds, 
+  grid = recipe.grid
+)
+
+autoplot(tune.results)
+
+show_best(tune.results, metric = "rmse")
+best.neighbor <- select_best(tune.results, neighbors, metric = "rmse")
+knn.final.wf <- finalize_workflow(knn.wf, best.neighbor)
+knn.final.fit <- fit(knn.final.wf, terminator2.train.tbl)
+
+#RMSE and R^2 on testing dataset
+pred.rating <- augment(knn.final.fit, terminator2.test.tbl)
+
+rmse(pred.rating, truth = rating, estimate = .pred)
+rsq(pred.rating, truth = rating, estimate = .pred)
+
+
+#Getting 5th testing and training
+testing(recipe.folds[[1]][[5]])
+
+training(recipe.folds[[1]][[5]])
+
+```
+
+We see that the optimal number of neighbors is k=10, and when we run a model with k=10 we get an rmse of 0.61 and an $R^2$ of 0.468. These values are actually both worse than our linear model, as we have a higher rmse and a lower $R^2$. 
+
+While we can see the 5th training and testing datasets, there is more that goes into constructing them. To construct them, we first split our data into 10 different folds (chunks). We then go through 10 times and train our models using a different fold as the testing dataset each time. So, our 5th training dataset is all the folds except for the 5th 'chunk', which our 5th testing dataset is the 5th 'chunk'/fold itself. We can construct this in R using the training and testing functions by applying it to the 'folds' object that we make. 
+
+
+# Extra Credit! (5 points)
+
+Knit your document into a PDF and submit it though the Moodle webpage.
+
